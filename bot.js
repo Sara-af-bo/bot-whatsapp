@@ -1,7 +1,15 @@
 const express = require('express');
 const { MongoClient } = require('mongodb');
-const mongoose = require('mongoose');
-const { MongoStore } = require('wwebjs-mongo');
+
+let mongoose = null;
+let MongoStore = null;
+try {
+    mongoose = require('mongoose');
+    MongoStore = require('wwebjs-mongo');
+} catch (error) {
+    console.warn('MongoDB dependencies not available. Running without persistence.');
+}
+
 const { Client, LocalAuth, RemoteAuth } = require('whatsapp-web.js');
 const QRCode = require('qrcode');
 
@@ -236,6 +244,11 @@ function assignLoadedState(target, source) {
 }
 
 async function connectMongo() {
+    if (!mongoose || !MongoStore) {
+        console.warn('MongoDB dependencies not available. Skipping MongoDB connection.');
+        return;
+    }
+
     try {
         if (!MONGODB_URI) {
             console.warn('MongoDB no configurado. Define MONGODB_URI para guardar datos.');
