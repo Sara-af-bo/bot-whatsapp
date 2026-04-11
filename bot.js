@@ -22,7 +22,17 @@ const client = new Client({
 // QR
 client.on('qr', qr => {
     console.log('Escanea este QR:');
-    qrcode.generate(qr, { small: true });
+const fs = require('fs');
+
+client.on('qr', qr => {
+    console.log('QR recibido, guardando imagen...');
+
+    const QRCode = require('qrcode');
+
+    QRCode.toFile('qr.png', qr, function (err) {
+        if (err) throw err;
+        console.log('QR guardado como qr.png');
+    });
 });
 
 // READY + SACAR IDS
