@@ -28,7 +28,7 @@ const FORCED_RECYCLE_MS = 6 * 60 * 60 * 1000;
 const RESTART_DELAY_MS = 15000;
 const MAX_RSS_MB = Number(process.env.MAX_RSS_MB || 420);
 const MAX_HEAP_MB = Number(process.env.MAX_HEAP_MB || 220);
-const ENABLE_QR_LOG = process.env.ENABLE_QR_LOG === 'true';
+const ENABLE_QR_LOG = String(process.env.ENABLE_QR_LOG).toLowerCase() === 'true';
 
 const warnings = {};
 const mutedUsers = {};
