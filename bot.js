@@ -153,19 +153,33 @@ function buildFichaBienvenida(user) {
         `Welcome @${user.split('@')[0]}`,
         '',
         'Ficha de presentacion:',
+        
         '- Nombre:',
+        
         '- Genero o pronombres:',
+        
         '- Edad:',
+        
         '- Fecha de cumpleanos:',
+        
         '- Signo zodiaco:',
+        
         '- Hobbies favoritos:',
+        
         '- Series/libros/peliculas favoritas:',
+        
         '- Como te describirias:',
+        
         '- Cual es tu mayor deseo:',
+        
         '- Aceptas respetar las reglas:',
+        
         '- En que otros clanes estas o estabas:',
+        
         '- Captura del codigo de amistad de Among Us (obligatorio)',
+        
         '- Foto tuya (opcional)'
+        
     ].join('\n');
 }
 
