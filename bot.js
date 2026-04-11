@@ -1,12 +1,11 @@
-// redeploy
 const { Client } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 
-// 🔒 PONEMOS EL ID DESPUÉS
 const GRUPO_ID = "AQUI_VA_EL_ID";
 
 const client = new Client({
     puppeteer: {
+        executablePath: '/usr/bin/chromium',
         headless: true,
         args: [
             '--no-sandbox',
@@ -19,23 +18,13 @@ const client = new Client({
     }
 });
 
-// QR
+// QR (SOLO UNO, limpio)
 client.on('qr', qr => {
     console.log('Escanea este QR:');
-const fs = require('fs');
-
-client.on('qr', qr => {
-    console.log('QR recibido, guardando imagen...');
-
-    const QRCode = require('qrcode');
-
-    QRCode.toFile('qr.png', qr, function (err) {
-        if (err) throw err;
-        console.log('QR guardado como qr.png');
-    });
+    qrcode.generate(qr, { small: true });
 });
 
-// READY + SACAR IDS
+// READY + IDS
 client.on('ready', async () => {
     console.log('Bot listo 🚀');
 
@@ -49,11 +38,10 @@ client.on('ready', async () => {
     });
 });
 
-// 👇 DETECTAR ENTRADA
+// DETECTAR ENTRADA
 client.on('group_join', async (notification) => {
     const chat = await notification.getChat();
 
-    // 🔒 SOLO TU GRUPO
     if (chat.id._serialized !== GRUPO_ID) return;
 
     const user = notification.recipientIds[0];
@@ -66,29 +54,17 @@ client.on('group_join', async (notification) => {
 ︽❨💣 ೃ/ੈː͡➘ Ficha de presentación
 
  彡ૢ⃢🫯 ·੭  _Nombre:_ 
-
  彡ૢ⃢👑 ·੭ _Género o pronombres:_
-
  彡ૢ⃢🐉 ·੭ _Edad:_ 
-
  彡ૢ⃢🧶 ·੭ _Fecha de cumpleaños:_ 
-
  彡ૢ⃢💸 ·੭ _Signo zodiaco:_
-
  彡ૢ⃢🎧 ·੭ _¿Hobbies favoritos?:_
-
  彡ૢ⃢💣 ·੭ _¿Series/libros/peliculas favoritas?:_
-
  彡ૢ⃢🦩 ·੭ _¿Con que palabras te describirias?:_
-
  彡ૢ⃢🎓 ·੭ _¿Cuál es tu mayor deseo?:_
-
  彡ૢ⃢👑 ·੭ _¿Aceptas respetar las reglas?:_ 
-
- 彡ૢ⃢🦋 ·੭ _¿En que otros clanes estás o estabas?_ 
-
+ 彡ૢ⃢🦋 ·੭ _¿En que otros clanes estás o estuvistes?_ 
  彡ૢ⃢🪐 ·੭ _Captura del codigo de amistad de among us (obligatorio)_
-
  彡ૢ⃢🐿️ ·੭ _Foto de tu carita hermosa (opcional)_
 
    ༊ཱི࿆᪰⃝🐉 DRΛXØRIX 死
