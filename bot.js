@@ -78,6 +78,7 @@ let mongoEventsCollection = null;
 let mongoFichasCollection = null;
 let pendingStateSaveTimeout = null;
 let stateSaveInFlight = null;
+const processedMessageIds = new Map();
 const monitoredChromiumPages = new WeakSet();
 
 const app = express();
@@ -173,6 +174,28 @@ function clearTimer(timer) {
     if (timer) {
         clearTimeout(timer);
     }
+}
+
+function shouldProcessMessage(msg) {
+    const messageId = msg && msg.id && msg.id._serialized;
+    if (!messageId) {
+        return true;
+    }
+
+    const now = Date.now();
+
+    for (const [id, timestamp] of processedMessageIds.entries()) {
+        if (now - timestamp > 30 * 1000) {
+            processedMessageIds.delete(id);
+        }
+    }
+
+    if (processedMessageIds.has(messageId)) {
+        return false;
+    }
+
+    processedMessageIds.set(messageId, now);
+    return true;
 }
 
 function getPersistentStateSnapshot() {
@@ -622,6 +645,33 @@ function getUserId(msg) {
     return msg.author || msg.from;
 }
 
+function normalizeWhatsAppId(value) {
+    if (!value) {
+        return '';
+    }
+
+    return String(value).split('@')[0].replace(/\D/g, '');
+}
+
+function participantMatchesUser(participant, userId) {
+    if (!participant) {
+        return false;
+    }
+
+    const candidateIds = [
+        participant.id && participant.id._serialized,
+        participant.id && participant.id.user,
+        participant.lid,
+        participant.phone
+    ].filter(Boolean);
+
+    const normalizedUserId = normalizeWhatsAppId(userId);
+
+    return candidateIds.some(candidate => {
+        return candidate === userId || normalizeWhatsAppId(candidate) === normalizedUserId;
+    });
+}
+
 function getCommandName(text) {
     if (!text.startsWith('!')) {
         return null;
@@ -666,7 +716,7 @@ async function safeSetAdminsOnly(chat, enabled) {
 async function esAdmin(chat, userId) {
     const participantes = Array.isArray(chat.participants) ? chat.participants : [];
     const participante = participantes.find(
-        participant => participant.id._serialized === userId
+        participant => participantMatchesUser(participant, userId)
     );
 
     return Boolean(participante && (participante.isAdmin || participante.isSuperAdmin));
@@ -1487,10 +1537,14 @@ function bindClientEvents(currentClient) {
         }
     });
 
-    currentClient.on('message', async msg => {
+    const handleGroupMessage = async msg => {
         touchHealth();
 
         try {
+            if (!shouldProcessMessage(msg)) {
+                return;
+            }
+
             const text = (msg.body || '').toLowerCase().trim();
 
             const chat = await msg.getChat();
@@ -1522,7 +1576,10 @@ function bindClientEvents(currentClient) {
                 console.error('Error procesando mensaje:', getErrorMessage(error));
             }
         }
-    });
+    };
+
+    currentClient.on('message', handleGroupMessage);
+    currentClient.on('message_create', handleGroupMessage);
 }
 
 async function startClient() {
