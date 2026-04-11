@@ -1,5 +1,4 @@
-console.log("ENV QR:", process.env.ENABLE_QR_LOG);
-console.log("redeploy trigger");
+const express = require('express');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const QRCode = require('qrcode');
 
@@ -27,9 +26,9 @@ const CLEANUP_INTERVAL_MS = 30 * 60 * 1000;
 const HEALTHCHECK_INTERVAL_MS = 2 * 60 * 1000;
 const FORCED_RECYCLE_MS = 6 * 60 * 60 * 1000;
 const RESTART_DELAY_MS = 15000;
+const WEB_PORT = 3000;
 const MAX_RSS_MB = Number(process.env.MAX_RSS_MB || 420);
 const MAX_HEAP_MB = Number(process.env.MAX_HEAP_MB || 220);
-const ENABLE_QR_LOG = String(process.env.ENABLE_QR_LOG).toLowerCase() === 'true';
 
 const warnings = {};
 const mutedUsers = {};
@@ -49,6 +48,35 @@ let reopenTimeout = null;
 let browserDisconnectHandler = null;
 let lastRestartAt = 0;
 let lastHealthyAt = 0;
+let latestQR = null;
+
+const app = express();
+
+app.get('/qr', (req, res) => {
+    const qrMarkup = latestQR
+        ? `<img src="${latestQR}" alt="QR de WhatsApp" style="max-width: 320px; width: 100%; height: auto;" />`
+        : '<p>QR a\u00fan no generado</p>';
+
+    res.send(`<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="refresh" content="5" />
+    <title>QR del bot</title>
+</head>
+<body style="font-family: Arial, sans-serif; margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f5f5f5; color: #111;">
+    <main style="text-align: center; background: white; padding: 24px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.08); width: min(92vw, 420px);">
+        <h1 style="margin-top: 0;">QR del bot</h1>
+        ${qrMarkup}
+    </main>
+</body>
+</html>`);
+});
+
+app.listen(WEB_PORT, '0.0.0.0', () => {
+    console.log(`Servidor QR activo en el puerto ${WEB_PORT}`);
+});
 
 function createClient() {
     return new Client({
@@ -56,7 +84,7 @@ function createClient() {
         restartOnAuthFail: true,
         takeoverOnConflict: true,
         takeoverTimeoutMs: 0,
-        qrMaxRetries: 3,
+        qrMaxRetries: 20,
         puppeteer: {
             headless: true,
             executablePath: process.env.PUPPETEER_EXECUTABLE_PATH,
@@ -699,19 +727,11 @@ function bindClientEvents(currentClient) {
     currentClient.on('qr', async qr => {
         touchHealth();
 
-        if (!ENABLE_QR_LOG) {
-            console.log('QR generado. Activa ENABLE_QR_LOG=true si necesitas ver el data URL.');
-            return;
-        }
-
         try {
-            const qrDataUrl = await QRCode.toDataURL(qr, {
+            latestQR = await QRCode.toDataURL(qr, {
                 width: 180,
                 margin: 1
             });
-
-            console.log('QR en base64:');
-            console.log(qrDataUrl);
         } catch (error) {
             console.error('No se pudo generar el QR en base64:', error.message);
         }
@@ -719,6 +739,7 @@ function bindClientEvents(currentClient) {
 
     currentClient.on('ready', async () => {
         touchHealth();
+        latestQR = null;
         console.log('Bot unificado activo.');
         await optimizeChromiumResources(currentClient);
     });
