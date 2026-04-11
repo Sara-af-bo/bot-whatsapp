@@ -1,3 +1,4 @@
+console.log("ENV QR:", process.env.ENABLE_QR_LOG);
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const QRCode = require('qrcode');
 
