@@ -39,8 +39,9 @@ const BAD_STATE_RESTART_THRESHOLD = 5;
 const WEB_PORT = 3000;
 const MAX_RSS_MB = Number(process.env.MAX_RSS_MB || 420);
 const MAX_HEAP_MB = Number(process.env.MAX_HEAP_MB || 220);
-const MONGODB_URI = process.env.MONGODB_URI || '';
-const MONGODB_DB = process.env.MONGODB_DB || 'draxorix_bot';
+const MONGODB_URI = 'mongodb+srv://saraafilal12_db_user:UzyX51czf1UCTivV@cluster0.cif83zy.mongodb.net/?appName=Cluster0';
+const MONGODB_DB = 'draxorix_bot';
+const SESSION_CLIENT_ID = process.env.SESSION_CLIENT_ID || 'draxorix-bot';
 const STATE_SAVE_DEBOUNCE_MS = 1000;
 const TRACKED_GROUP_IDS = Object.values(GROUP_IDS);
 const PERSISTED_CHAT_ACTIONS = new Set([
