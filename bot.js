@@ -24,10 +24,10 @@ const STALE_USER_TTL_MS = 6 * 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 30 * 60 * 1000;
 
 const HEALTHCHECK_INTERVAL_MS = 2 * 60 * 1000;
-const FORCED_RECYCLE_MS = 6 * 60 * 60 * 1000;
+const FORCED_RECYCLE_MS = 0;
 const RESTART_DELAY_MS = 15000;
 const MIN_RESTART_INTERVAL_MS = 2 * 60 * 1000;
-const BAD_STATE_RESTART_THRESHOLD = 3;
+const BAD_STATE_RESTART_THRESHOLD = 5;
 const WEB_PORT = 3000;
 const MAX_RSS_MB = Number(process.env.MAX_RSS_MB || 420);
 const MAX_HEAP_MB = Number(process.env.MAX_HEAP_MB || 220);
@@ -93,34 +93,29 @@ function createClient() {
         qrMaxRetries: 20,
         puppeteer: {
             headless: true,
-            protocolTimeout: 180000,
+            protocolTimeout: 240000,
             ignoreHTTPSErrors: true,
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage',
                 '--disable-gpu',
+                '--single-process',
                 '--no-zygote',
                 '--no-first-run',
-                '--disable-extensions',
                 '--disable-background-networking',
                 '--disable-background-timer-throttling',
                 '--disable-backgrounding-occluded-windows',
                 '--disable-breakpad',
-                '--disable-component-extensions-with-background-pages',
-                '--disable-default-apps',
+                '--disable-extensions',
                 '--disable-features=Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints',
                 '--disable-hang-monitor',
                 '--disable-ipc-flooding-protection',
-                '--disable-popup-blocking',
-                '--disable-prompt-on-repost',
                 '--disable-renderer-backgrounding',
                 '--disable-sync',
                 '--metrics-recording-only',
                 '--mute-audio',
-                '--no-default-browser-check',
-                '--password-store=basic',
-                '--use-mock-keychain'
+                '--no-default-browser-check'
             ]
         }
     });
@@ -670,7 +665,7 @@ async function healthcheckClient() {
         return;
     }
 
-    if (Date.now() - lastRestartAt >= FORCED_RECYCLE_MS) {
+    if (FORCED_RECYCLE_MS > 0 && Date.now() - lastRestartAt >= FORCED_RECYCLE_MS) {
         await restartClient('scheduled recycle');
     }
 }
@@ -691,7 +686,7 @@ async function destroyCurrentClient() {
 
     try {
         if (currentClient.pupBrowser && browserDisconnectHandler) {
-            currentClient.pupBrowser.removeListener('disconnected', browserDisconnectHandler);
+            currentClient.pupBrowser.off('disconnected', browserDisconnectHandler);
         }
     } catch (error) {
         console.error('No se pudo quitar el listener del browser:', error.message);
@@ -795,7 +790,9 @@ function bindClientEvents(currentClient) {
 
     currentClient.on('auth_failure', message => {
         console.error('Fallo de autenticacion:', message);
-        restartClient('auth failure');
+        restartClient('auth failure').catch(error => {
+            console.error('No se pudo reiniciar tras auth failure:', error.message);
+        });
     });
 
     currentClient.on('change_state', state => {
@@ -805,7 +802,15 @@ function bindClientEvents(currentClient) {
 
     currentClient.on('disconnected', reason => {
         console.error(`Cliente desconectado: ${reason}`);
-        restartClient(`client disconnected: ${reason}`);
+
+        if (reason === 'NAVIGATION' || reason === 'TIMEOUT') {
+            console.log('Desconexion temporal detectada; no se reinicia para evitar bucle.');
+            return;
+        }
+
+        restartClient(`client disconnected: ${reason}`).catch(error => {
+            console.error('No se pudo reiniciar tras desconexion:', error.message);
+        });
     });
 
     currentClient.on('group_join', async notification => {
