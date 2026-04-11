@@ -367,6 +367,14 @@ function getUserId(msg) {
         return msg.id.participant;
     }
 
+    if (msg.author) {
+        return msg.author;
+    }
+
+    if (msg.fromMe && client && client.info && client.info.wid && client.info.wid._serialized) {
+        return client.info.wid._serialized;
+    }
+
     return msg.author || msg.from;
 }
 
@@ -448,6 +456,10 @@ function buildDestinoBienvenida(user) {
         `Bienvenidx @${user.split('@')[0]}`,
         'No mercy. Only DRAXORIX.'
     ].join('\n');
+}
+
+function formatUserMention(user) {
+    return `@${user.split('@')[0]}`;
 }
 
 async function optimizeChromiumResources(currentClient) {
@@ -584,7 +596,9 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
             '!aviso @usuario',
             '!quitaraviso @usuario',
             '!avisos @usuario'
-        ].join('\n'));
+        ].join('\n'), {
+            mentions: [usuario]
+        });
         return true;
     }
 
@@ -593,8 +607,8 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
         const objetivo = mencionados[0] || usuario;
 
         logChatEvent(chat, 'SEND_MESSAGE', `motivo=ficha-manual objetivo=${objetivo} solicitado-por=${usuario}`);
-        await chat.sendMessage(buildFichaBienvenida(objetivo), {
-            mentions: [objetivo]
+        await chat.sendMessage(`${buildFichaBienvenida(objetivo)}\n\nEnviada por ${formatUserMention(usuario)}`, {
+            mentions: [objetivo, usuario]
         });
         return true;
     }
@@ -603,28 +617,36 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
         const mencionados = msg.mentionedIds || [];
         if (mencionados.length === 0) {
             logChatEvent(chat, 'SEND_MESSAGE', `motivo=expulsar-sin-mencion solicitado-por=${usuario}`);
-            await chat.sendMessage('Debes mencionar a alguien.');
+            await chat.sendMessage(`Debes mencionar a alguien, ${formatUserMention(usuario)}.`, {
+                mentions: [usuario]
+            });
             return true;
         }
 
         await safeRemoveParticipants(chat, mencionados);
         mencionados.forEach(deleteUserState);
         logChatEvent(chat, 'SEND_MESSAGE', `motivo=usuario-expulsado solicitado-por=${usuario}`);
-        await chat.sendMessage('Usuario expulsado.');
+        await chat.sendMessage(`${formatUserMention(mencionados[0])} expulsado por ${formatUserMention(usuario)}.`, {
+            mentions: [mencionados[0], usuario]
+        });
         return true;
     }
 
     if (comando === '!cerrar') {
         await safeSetAdminsOnly(chat, true);
         logChatEvent(chat, 'SEND_MESSAGE', `motivo=grupo-cerrado solicitado-por=${usuario}`);
-        await chat.sendMessage('Grupo cerrado.');
+        await chat.sendMessage(`Grupo cerrado por ${formatUserMention(usuario)}.`, {
+            mentions: [usuario]
+        });
         return true;
     }
 
     if (comando === '!abrir') {
         await safeSetAdminsOnly(chat, false);
         logChatEvent(chat, 'SEND_MESSAGE', `motivo=grupo-abierto solicitado-por=${usuario}`);
-        await chat.sendMessage('Grupo abierto.');
+        await chat.sendMessage(`Grupo abierto por ${formatUserMention(usuario)}.`, {
+            mentions: [usuario]
+        });
         return true;
     }
 
@@ -632,7 +654,9 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
         const mencionados = msg.mentionedIds || [];
         if (mencionados.length === 0) {
             logChatEvent(chat, 'SEND_MESSAGE', `motivo=aviso-sin-mencion solicitado-por=${usuario}`);
-            await chat.sendMessage('Debes mencionar a alguien.');
+            await chat.sendMessage(`Debes mencionar a alguien, ${formatUserMention(usuario)}.`, {
+                mentions: [usuario]
+            });
             return true;
         }
 
@@ -642,14 +666,16 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
 
         logChatEvent(chat, 'SEND_MESSAGE', `motivo=aviso objetivo=${objetivo} solicitado-por=${usuario}`);
         await chat.sendMessage(
-            `Aviso para @${objetivo.split('@')[0]} (${avisos[objetivo]}/3)`,
-            { mentions: [objetivo] }
+            `Aviso para ${formatUserMention(objetivo)} (${avisos[objetivo]}/3) por ${formatUserMention(usuario)}.`,
+            { mentions: [objetivo, usuario] }
         );
 
         if (avisos[objetivo] >= 3) {
             await safeRemoveParticipants(chat, [objetivo]);
             logChatEvent(chat, 'SEND_MESSAGE', `motivo=expulsado-por-avisos objetivo=${objetivo}`);
-            await chat.sendMessage('Expulsado por 3 avisos.');
+            await chat.sendMessage(`${formatUserMention(objetivo)} expulsado por 3 avisos. Ultimo aviso de ${formatUserMention(usuario)}.`, {
+                mentions: [objetivo, usuario]
+            });
             deleteUserState(objetivo);
         }
         return true;
@@ -659,7 +685,9 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
         const mencionados = msg.mentionedIds || [];
         if (mencionados.length === 0) {
             logChatEvent(chat, 'SEND_MESSAGE', `motivo=quitaraviso-sin-mencion solicitado-por=${usuario}`);
-            await chat.sendMessage('Debes mencionar a alguien.');
+            await chat.sendMessage(`Debes mencionar a alguien, ${formatUserMention(usuario)}.`, {
+                mentions: [usuario]
+            });
             return true;
         }
 
@@ -668,8 +696,8 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
         userJoinLog[objetivo] = Date.now();
 
         logChatEvent(chat, 'SEND_MESSAGE', `motivo=avisos-reiniciados objetivo=${objetivo} solicitado-por=${usuario}`);
-        await chat.sendMessage(`Avisos reiniciados para @${objetivo.split('@')[0]}`, {
-            mentions: [objetivo]
+        await chat.sendMessage(`Avisos reiniciados para ${formatUserMention(objetivo)} por ${formatUserMention(usuario)}.`, {
+            mentions: [objetivo, usuario]
         });
         return true;
     }
@@ -678,7 +706,9 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
         const mencionados = msg.mentionedIds || [];
         if (mencionados.length === 0) {
             logChatEvent(chat, 'SEND_MESSAGE', `motivo=avisos-sin-mencion solicitado-por=${usuario}`);
-            await chat.sendMessage('Debes mencionar a alguien.');
+            await chat.sendMessage(`Debes mencionar a alguien, ${formatUserMention(usuario)}.`, {
+                mentions: [usuario]
+            });
             return true;
         }
 
@@ -687,8 +717,8 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
 
         logChatEvent(chat, 'SEND_MESSAGE', `motivo=consultar-avisos objetivo=${objetivo} solicitado-por=${usuario}`);
         await chat.sendMessage(
-            `@${objetivo.split('@')[0]} tiene ${cantidad} avisos.`,
-            { mentions: [objetivo] }
+            `${formatUserMention(objetivo)} tiene ${cantidad} avisos. Consultado por ${formatUserMention(usuario)}.`,
+            { mentions: [objetivo, usuario] }
         );
         return true;
     }
@@ -1073,10 +1103,6 @@ function bindClientEvents(currentClient) {
         try {
             const text = (msg.body || '').toLowerCase().trim();
 
-            if (msg.fromMe && !text.startsWith('!')) {
-                return;
-            }
-
             const chat = await msg.getChat();
             if (!chat.isGroup) {
                 return;
@@ -1084,6 +1110,10 @@ function bindClientEvents(currentClient) {
 
             const user = getUserId(msg);
             logIncomingMessage(chat, user, text, msg.fromMe);
+
+            if (msg.fromMe && !text.startsWith('!')) {
+                return;
+            }
 
             const comandoProcesado = await manejarComandosAdmin(msg, chat, text, user);
             if (comandoProcesado) {
