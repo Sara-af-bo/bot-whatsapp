@@ -363,7 +363,19 @@ function extraerEdad(texto) {
 }
 
 function getUserId(msg) {
+    if (msg.id && msg.id.participant) {
+        return msg.id.participant;
+    }
+
     return msg.author || msg.from;
+}
+
+function getCommandName(text) {
+    if (!text.startsWith('!')) {
+        return null;
+    }
+
+    return text.split(/\s+/)[0];
 }
 
 function isFicha(text) {
@@ -553,11 +565,19 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
         return false;
     }
 
-    if (texto === '!help') {
+    const comando = getCommandName(texto);
+    const admin = await esAdmin(chat, usuario);
+    if (!admin) {
+        return false;
+    }
+
+    if (comando === '!help') {
         logChatEvent(chat, 'SEND_MESSAGE', `motivo=admin-help solicitado-por=${usuario}`);
         await chat.sendMessage([
             'COMANDOS ADMIN',
             '',
+            '!help',
+            '!ficha @usuario',
             '!expulsar @usuario',
             '!cerrar',
             '!abrir',
@@ -568,12 +588,18 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
         return true;
     }
 
-    const admin = await esAdmin(chat, usuario);
-    if (!admin) {
-        return false;
+    if (comando === '!ficha') {
+        const mencionados = msg.mentionedIds || [];
+        const objetivo = mencionados[0] || usuario;
+
+        logChatEvent(chat, 'SEND_MESSAGE', `motivo=ficha-manual objetivo=${objetivo} solicitado-por=${usuario}`);
+        await chat.sendMessage(buildFichaBienvenida(objetivo), {
+            mentions: [objetivo]
+        });
+        return true;
     }
 
-    if (texto.startsWith('!expulsar')) {
+    if (comando === '!expulsar') {
         const mencionados = msg.mentionedIds || [];
         if (mencionados.length === 0) {
             logChatEvent(chat, 'SEND_MESSAGE', `motivo=expulsar-sin-mencion solicitado-por=${usuario}`);
@@ -588,21 +614,21 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
         return true;
     }
 
-    if (texto === '!cerrar') {
+    if (comando === '!cerrar') {
         await safeSetAdminsOnly(chat, true);
         logChatEvent(chat, 'SEND_MESSAGE', `motivo=grupo-cerrado solicitado-por=${usuario}`);
         await chat.sendMessage('Grupo cerrado.');
         return true;
     }
 
-    if (texto === '!abrir') {
+    if (comando === '!abrir') {
         await safeSetAdminsOnly(chat, false);
         logChatEvent(chat, 'SEND_MESSAGE', `motivo=grupo-abierto solicitado-por=${usuario}`);
         await chat.sendMessage('Grupo abierto.');
         return true;
     }
 
-    if (texto.startsWith('!aviso')) {
+    if (comando === '!aviso') {
         const mencionados = msg.mentionedIds || [];
         if (mencionados.length === 0) {
             logChatEvent(chat, 'SEND_MESSAGE', `motivo=aviso-sin-mencion solicitado-por=${usuario}`);
@@ -629,7 +655,7 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
         return true;
     }
 
-    if (texto.startsWith('!quitaraviso')) {
+    if (comando === '!quitaraviso') {
         const mencionados = msg.mentionedIds || [];
         if (mencionados.length === 0) {
             logChatEvent(chat, 'SEND_MESSAGE', `motivo=quitaraviso-sin-mencion solicitado-por=${usuario}`);
@@ -648,7 +674,7 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
         return true;
     }
 
-    if (texto.startsWith('!avisos')) {
+    if (comando === '!avisos') {
         const mencionados = msg.mentionedIds || [];
         if (mencionados.length === 0) {
             logChatEvent(chat, 'SEND_MESSAGE', `motivo=avisos-sin-mencion solicitado-por=${usuario}`);
