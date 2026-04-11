@@ -2,7 +2,7 @@ const { Client } = require('whatsapp-web.js');
 const QRCode = require('qrcode');
 const fs = require('fs');
 
-const GRUPO_ID = "AQUI_VA_EL_ID";
+const GRUPO_ID = "120363408940060754@g.us";
 
 const client = new Client({
     puppeteer: {
