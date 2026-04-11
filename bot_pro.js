@@ -157,7 +157,7 @@ client.on('message', async (msg) => {
         usuariosFicha[user] = true;
 
         await chat.sendMessage(
-            "✅ Ficha completada. Espera a los administradores."
+            "✅ Ficha completada. En un momento se te añade al grupo."
         );
 
         logUser(user, "FICHA COMPLETADA");
