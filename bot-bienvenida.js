@@ -3,7 +3,7 @@ const { Client, LocalAuth } = require('whatsapp-web.js');
 const GRUPO_ID = "120363408940060754@g.us";
 
 const client = new Client({
-    authStrategy: new LocalAuth(),
+authStrategy: new LocalAuth({ clientId: "bienvenida" }),
     puppeteer: {
         executablePath: '/usr/bin/chromium',
         headless: true,
