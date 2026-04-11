@@ -39,7 +39,6 @@ client.on('message', async (msg) => {
         let destinoID;
         let grupoNombre;
 
-        // 🔥 CAMBIO AQUÍ → 17
         if (edad >= 17) {
             destinoID = ELITE_ID;
             grupoNombre = "ELITE";
@@ -51,6 +50,7 @@ client.on('message', async (msg) => {
         try {
             const grupoDestino = await client.getChatById(destinoID);
 
+            // ➕ AÑADIR
             await grupoDestino.addParticipants([user]);
 
             const mensaje = `
@@ -62,23 +62,6 @@ client.on('message', async (msg) => {
 　　　➤ @${user.split('@')[0]}
 ೄ ༘ «⸙︽︽︽ ⌒⌒⌒⌒💥꒰
 
-𖤐 Has entrado en *DRΛXØRIX* 死
-un clan donde solo sobreviven los que respetan el orden dentro del caos
-
-⊱╌╍⟞❬❀ೄ๑˚｡˚ ⛓️ *ೄ๑❀❭⟝╌╍╌⊰
-
--ˏˋ¡!☠️ೄ Aquí no hay lugar para el debil
--ˏˋ¡!☠️ೄ Se exige respeto absoluto
--ˏˋ¡!☠️ೄ La traición se paga caro
-
-⊱╌╍⟞❬❀ೄ๑˚｡˚ ⛓️ *ೄ๑❀❭⟝╌╍╌⊰
-
--ˏˋ¡!⚔️ೄ  Respeta las normas o cae
--ˏˋ¡!⚔️ೄ Demuestra tu nivel en las rooms
--ˏˋ¡!⚔️ೄ  Gana tu lugar en el clan
-
-⊱╌╍⟞❬❀ೄ๑˚｡˚ ⛓️ *ೄ๑❀❭⟝╌╍╌⊰
-
 ╰➤ *NO MERCY* · ONLY DRΛXØRIX 死 🐉🔥
 `;
 
@@ -88,15 +71,26 @@ un clan donde solo sobreviven los que respetan el orden dentro del caos
 
             await chat.sendMessage(`✅ Usuario añadido a ${grupoNombre}`);
 
+            // ⏳ ELIMINAR DEL LOBBY
+            setTimeout(async () => {
+                try {
+                    await chat.removeParticipants([user]);
+                } catch (err) {
+                    console.error("Error eliminando:", err);
+                }
+            }, 3000);
+
         } catch (err) {
             console.error(err);
-            await chat.sendMessage("❌ No se pudo añadir (posible privacidad del usuario).");
+            await chat.sendMessage("❌ No se pudo añadir.");
         }
     }
-});
+}); // 🔥 ESTE CIERRE TE FALTABA
 
+// ✅ READY FUERA
 client.on('ready', () => {
     console.log("🔥 BOT ROLES ACTIVO (17+ ELITE)");
 });
 
+// ✅ INIT FUERA
 client.initialize();
