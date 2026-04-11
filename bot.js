@@ -79,6 +79,8 @@ app.listen(WEB_PORT, '0.0.0.0', () => {
 });
 
 function createClient() {
+    console.log('createClient() -> creando cliente de WhatsApp');
+
     return new Client({
         authStrategy: new LocalAuth({ clientId: 'draxorix-bot' }),
         restartOnAuthFail: true,
@@ -87,36 +89,9 @@ function createClient() {
         qrMaxRetries: 20,
         puppeteer: {
             headless: true,
-            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH,
-            protocolTimeout: 60000,
-            ignoreHTTPSErrors: true,
             args: [
                 '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-gpu',
-                '--no-zygote',
-                '--no-first-run',
-                '--disable-extensions',
-                '--disable-background-networking',
-                '--disable-background-timer-throttling',
-                '--disable-backgrounding-occluded-windows',
-                '--disable-breakpad',
-                '--disable-component-extensions-with-background-pages',
-                '--disable-default-apps',
-                '--disable-features=Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints',
-                '--disable-hang-monitor',
-                '--disable-ipc-flooding-protection',
-                '--disable-popup-blocking',
-                '--disable-prompt-on-repost',
-                '--disable-renderer-backgrounding',
-                '--disable-sync',
-                '--force-color-profile=srgb',
-                '--metrics-recording-only',
-                '--mute-audio',
-                '--no-default-browser-check',
-                '--password-store=basic',
-                '--use-mock-keychain'
+                '--disable-setuid-sandbox'
             ]
         }
     });
@@ -724,17 +699,30 @@ async function restartClient(reason) {
 }
 
 function bindClientEvents(currentClient) {
+    console.log('bindClientEvents() -> registrando eventos del cliente');
+
     currentClient.on('qr', async qr => {
         touchHealth();
+        console.log('GENERANDO QR');
 
         try {
             latestQR = await QRCode.toDataURL(qr, {
                 width: 180,
                 margin: 1
             });
+            console.log('QR listo -> /qr');
         } catch (error) {
             console.error('No se pudo generar el QR en base64:', error.message);
         }
+    });
+
+    currentClient.on('loading_screen', (percent, message) => {
+        touchHealth();
+        console.log(`loading_screen -> ${percent}% ${message || ''}`.trim());
+    });
+
+    currentClient.on('error', error => {
+        console.error('client error:', error);
     });
 
     currentClient.on('ready', async () => {
@@ -799,6 +787,7 @@ function bindClientEvents(currentClient) {
 }
 
 async function startClient() {
+    console.log('startClient() -> iniciando cliente');
     const newClient = createClient();
     client = newClient;
     bindClientEvents(newClient);
@@ -806,7 +795,15 @@ async function startClient() {
     lastRestartAt = Date.now();
     touchHealth();
 
-    await newClient.initialize();
+    console.log('startClient() -> ejecutando initialize()');
+
+    try {
+        await client.initialize();
+        console.log('startClient() -> initialize() completado');
+    } catch (error) {
+        console.error('startClient() -> fallo al iniciar Puppeteer/WhatsApp:', error);
+        throw error;
+    }
 }
 
 function startSchedulers() {
