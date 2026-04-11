@@ -1,5 +1,7 @@
+const fs = require('fs');
+const path = require('path');
 const { Client, LocalAuth } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
+const QRCode = require('qrcode');
 
 const GROUP_IDS = {
     LOBBY: '120363408940060754@g.us',
@@ -18,6 +20,7 @@ const DEFAULT_MUTE_MS = 60 * 1000;
 const REMINDER_MS = 12 * 60 * 60 * 1000;
 const KICK_DELAY_MS = 24 * 60 * 60 * 1000;
 const REOPEN_GROUP_MS = 10 * 60 * 1000;
+const QR_IMAGE_PATH = path.join(__dirname, 'qr.png');
 
 const client = new Client({
     authStrategy: new LocalAuth({ clientId: 'draxorix-bot' }),
@@ -385,9 +388,22 @@ async function manejarFichaLobby(msg, chat, text, user) {
     return true;
 }
 
-client.on('qr', qr => {
-    console.log('Escanea este QR:');
-    qrcode.generate(qr, { small: true });
+client.on('qr', async qr => {
+    try {
+        if (fs.existsSync(QR_IMAGE_PATH)) {
+            fs.unlinkSync(QR_IMAGE_PATH);
+        }
+
+        await QRCode.toFile(QR_IMAGE_PATH, qr, {
+            type: 'png',
+            width: 420,
+            margin: 2
+        });
+
+        console.log(`QR guardado como imagen en: ${QR_IMAGE_PATH}`);
+    } catch (error) {
+        console.error('No se pudo generar el QR como imagen:', error.message);
+    }
 });
 
 client.on('ready', async () => {
