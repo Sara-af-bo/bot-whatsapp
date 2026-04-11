@@ -10,6 +10,11 @@ const GROUP_IDS = {
     ARCHIVE: '120363425009767808@g.us'
 };
 
+const ADMIN_IDS = [
+    '273521049612340@lid',
+    '200815692222677@lid'
+];
+
 const ALLOWED_GROUPS = [GROUP_IDS.LOBBY, GROUP_IDS.ROOKIE, GROUP_IDS.ELITE];
 const ALLOWED_PREFIXES = ['34', '52', '54', '57', '51', '58', '56', '593', '591', '595', '598'];
 const INSULTS = ['puta', 'gilipollas', 'idiota', 'imbecil', 'subnormal'];
@@ -672,12 +677,49 @@ function participantMatchesUser(participant, userId) {
     });
 }
 
+function isParticipantAdmin(participant) {
+    if (!participant) {
+        return false;
+    }
+
+    return Boolean(
+        participant.isAdmin ||
+        participant.isSuperAdmin ||
+        participant.isGroupAdmin ||
+        participant.admin
+    );
+}
+
+function getChatParticipants(chat) {
+    const sources = [
+        chat && chat.participants,
+        chat && chat.groupMetadata && chat.groupMetadata.participants,
+        chat && chat.groupMetadata && chat.groupMetadata._data && chat.groupMetadata._data.participants
+    ];
+
+    for (const source of sources) {
+        if (Array.isArray(source) && source.length > 0) {
+            return source;
+        }
+    }
+
+    return [];
+}
+
 function getCommandName(text) {
     if (!text.startsWith('!')) {
         return null;
     }
 
     return text.split(/\s+/)[0];
+}
+
+function isAuthorizedAdmin(userId) {
+    const normalizedUserId = normalizeWhatsAppId(userId);
+
+    return ADMIN_IDS.some(adminId => {
+        return adminId === userId || normalizeWhatsAppId(adminId) === normalizedUserId;
+    });
 }
 
 function isFicha(text) {
@@ -714,12 +756,32 @@ async function safeSetAdminsOnly(chat, enabled) {
 }
 
 async function esAdmin(chat, userId) {
-    const participantes = Array.isArray(chat.participants) ? chat.participants : [];
-    const participante = participantes.find(
-        participant => participantMatchesUser(participant, userId)
+    let participantes = getChatParticipants(chat);
+
+    if (participantes.length === 0 && client && chat && chat.id && chat.id._serialized) {
+        try {
+            const refreshedChat = await client.getChatById(chat.id._serialized);
+            participantes = getChatParticipants(refreshedChat);
+        } catch (error) {
+            console.error('No se pudieron refrescar participantes del grupo:', getErrorMessage(error));
+        }
+    }
+
+    const participante = participantes.find(participant => participantMatchesUser(participant, userId));
+    if (participante) {
+        return isParticipantAdmin(participante);
+    }
+
+    const normalizedUserId = normalizeWhatsAppId(userId);
+    const normalizedOwnerId = normalizeWhatsAppId(
+        client && client.info && client.info.wid && client.info.wid._serialized
     );
 
-    return Boolean(participante && (participante.isAdmin || participante.isSuperAdmin));
+    if (normalizedUserId && normalizedOwnerId && normalizedUserId === normalizedOwnerId) {
+        return true;
+    }
+
+    return false;
 }
 
 function buildFichaBienvenida(user) {
@@ -968,7 +1030,7 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
     }
 
     const comando = getCommandName(texto);
-    const admin = await esAdmin(chat, usuario);
+    const admin = isAuthorizedAdmin(usuario) || await esAdmin(chat, usuario);
     if (!admin) {
         return false;
     }
