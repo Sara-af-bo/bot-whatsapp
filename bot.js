@@ -1,6 +1,8 @@
 const express = require('express');
 const { MongoClient } = require('mongodb');
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const mongoose = require('mongoose');
+const { MongoStore } = require('wwebjs-mongo');
+const { Client, LocalAuth, RemoteAuth } = require('whatsapp-web.js');
 const QRCode = require('qrcode');
 
 const GROUP_IDS = {
@@ -83,6 +85,7 @@ let mongoDb = null;
 let mongoStateCollection = null;
 let mongoEventsCollection = null;
 let mongoFichasCollection = null;
+let mongoStore = null;
 let pendingStateSaveTimeout = null;
 let stateSaveInFlight = null;
 const processedMessageIds = new Map();
@@ -119,8 +122,16 @@ app.listen(WEB_PORT, '0.0.0.0', () => {
 function createClient() {
     console.log('createClient() -> creando cliente de WhatsApp');
 
+    const authStrategy = mongoStore
+        ? new RemoteAuth({
+            clientId: SESSION_CLIENT_ID,
+            store: mongoStore,
+            backupSyncIntervalMs: 5 * 60 * 1000
+        })
+        : new LocalAuth({ clientId: SESSION_CLIENT_ID });
+
     return new Client({
-        authStrategy: new LocalAuth({ clientId: 'draxorix-bot' }),
+        authStrategy,
         restartOnAuthFail: true,
         takeoverOnConflict: true,
         takeoverTimeoutMs: 0,
@@ -225,21 +236,36 @@ function assignLoadedState(target, source) {
 }
 
 async function connectMongo() {
-    if (!MONGODB_URI) {
-        console.warn('MongoDB no configurado. Define MONGODB_URI para guardar datos.');
-        return;
-    }
+    try {
+        if (!MONGODB_URI) {
+            console.warn('MongoDB no configurado. Define MONGODB_URI para guardar datos.');
+            return;
+        }
 
-    mongoClient = new MongoClient(MONGODB_URI);
-    await mongoClient.connect();
-    mongoDb = mongoClient.db(MONGODB_DB);
-    mongoStateCollection = mongoDb.collection('bot_state');
-    mongoEventsCollection = mongoDb.collection('bot_events');
-    mongoFichasCollection = mongoDb.collection('fichas');
-    await mongoStateCollection.createIndex({ _id: 1 }, { unique: true });
-    await mongoEventsCollection.createIndex({ createdAt: -1 });
-    await mongoFichasCollection.createIndex({ userId: 1 }, { unique: true });
-    console.log(`MongoDB conectado a la base "${MONGODB_DB}".`);
+        await mongoose.connect(MONGODB_URI, {
+            dbName: MONGODB_DB
+        });
+
+        mongoStore = new MongoStore({ mongoose });
+        mongoClient = new MongoClient(MONGODB_URI);
+        await mongoClient.connect();
+        mongoDb = mongoClient.db(MONGODB_DB);
+        mongoStateCollection = mongoDb.collection('bot_state');
+        mongoEventsCollection = mongoDb.collection('bot_events');
+        mongoFichasCollection = mongoDb.collection('fichas');
+        await mongoStateCollection.createIndex({ _id: 1 }, { unique: true });
+        await mongoEventsCollection.createIndex({ createdAt: -1 });
+        await mongoFichasCollection.createIndex({ userId: 1 }, { unique: true });
+        console.log(`MongoDB conectado a la base "${MONGODB_DB}".`);
+    } catch (error) {
+        console.error('Error conectando a MongoDB:', getErrorMessage(error));
+        mongoStore = null;
+        mongoClient = null;
+        mongoDb = null;
+        mongoStateCollection = null;
+        mongoEventsCollection = null;
+        mongoFichasCollection = null;
+    }
 }
 
 async function loadPersistentState() {
@@ -1260,6 +1286,11 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
             return true;
         }
 
+        if (!mongoFichasCollection) {
+            await chat.sendMessage('MongoDB no disponible. Verifica la conexión.');
+            return true;
+        }
+
         const ficha = await findFichaByUserId(objetivo);
         if (!ficha) {
             await chat.sendMessage('No hay datos guardados para ese usuario.');
@@ -1281,7 +1312,7 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
     if (comando === '!fichas') {
         const fichas = await getFichaNames();
         if (!mongoFichasCollection) {
-            await chat.sendMessage('MongoDB no configurado.');
+            await chat.sendMessage('MongoDB no disponible. Verifica la conexión.');
             return true;
         }
 
@@ -1300,8 +1331,8 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
 
     if (comando === '!stats') {
         const stats = await getFichasStats();
-        if (!stats) {
-            await chat.sendMessage('MongoDB no configurado.');
+        if (!mongoFichasCollection) {
+            await chat.sendMessage('MongoDB no disponible. Verifica la conexión.');
             return true;
         }
 
@@ -1319,7 +1350,7 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
     if (comando === '!rank') {
         const ranking = await getFichasRank();
         if (!mongoFichasCollection) {
-            await chat.sendMessage('MongoDB no configurado.');
+            await chat.sendMessage('MongoDB no disponible. Verifica la conexión.');
             return true;
         }
 
@@ -1342,6 +1373,11 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
             return true;
         }
 
+        if (!mongoFichasCollection) {
+            await chat.sendMessage('MongoDB no disponible. Verifica la conexión.');
+            return true;
+        }
+
         logChatEvent(chat, 'SEND_MESSAGE', `motivo=resetdata objetivo=${objetivo} solicitado-por=${usuario}`);
         await chat.sendMessage('Eliminando datos...');
         const deleted = await deleteFichaByUserId(objetivo);
@@ -1355,7 +1391,7 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
 
     if (comando === '!actualizardatos') {
         if (!mongoFichasCollection) {
-            await chat.sendMessage('MongoDB no configurado.');
+            await chat.sendMessage('MongoDB no disponible. Verifica la conexión.');
             return true;
         }
 
@@ -2046,6 +2082,10 @@ async function shutdownPersistence() {
     if (mongoClient) {
         await mongoClient.close();
         mongoClient = null;
+    }
+
+    if (mongoose.connection.readyState !== 0) {
+        await mongoose.disconnect();
     }
 }
 
