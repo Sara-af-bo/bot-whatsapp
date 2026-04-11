@@ -18,12 +18,22 @@ const DEFAULT_MUTE_MS = 60 * 1000;
 const REMINDER_MS = 12 * 60 * 60 * 1000;
 const KICK_DELAY_MS = 24 * 60 * 60 * 1000;
 const REOPEN_GROUP_MS = 10 * 60 * 1000;
+const STALE_USER_TTL_MS = 6 * 60 * 60 * 1000;
+const CLEANUP_INTERVAL_MS = 30 * 60 * 1000;
 
 const client = new Client({
     authStrategy: new LocalAuth({ clientId: 'draxorix-bot' }),
     puppeteer: {
         headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--no-first-run',
+            '--no-zygote',
+            '--disable-extensions'
+        ]
     }
 });
 
@@ -34,6 +44,40 @@ const usuariosPendientes = {};
 const usuariosFicha = {};
 const userJoinLog = {};
 const avisos = {};
+let reopenTimeout = null;
+
+function deleteUserState(user) {
+    delete warnings[user];
+    delete mutedUsers[user];
+    delete userMessages[user];
+    delete usuariosPendientes[user];
+    delete usuariosFicha[user];
+    delete userJoinLog[user];
+    delete avisos[user];
+}
+
+function cleanupOldState() {
+    const now = Date.now();
+    const knownUsers = new Set([
+        ...Object.keys(warnings),
+        ...Object.keys(mutedUsers),
+        ...Object.keys(userMessages),
+        ...Object.keys(usuariosPendientes),
+        ...Object.keys(usuariosFicha),
+        ...Object.keys(userJoinLog),
+        ...Object.keys(avisos)
+    ]);
+
+    for (const user of knownUsers) {
+        const lastJoin = userJoinLog[user] || 0;
+        const lastMessage = (userMessages[user] && userMessages[user][userMessages[user].length - 1]) || 0;
+        const lastSeen = Math.max(lastJoin, lastMessage);
+
+        if (!lastSeen || now - lastSeen > STALE_USER_TTL_MS) {
+            deleteUserState(user);
+        }
+    }
+}
 
 function logUser(user, action) {
     console.log(`[LOG] ${user} -> ${action}`);
@@ -41,11 +85,13 @@ function logUser(user, action) {
 
 function addWarning(user) {
     warnings[user] = (warnings[user] || 0) + 1;
+    userJoinLog[user] = Date.now();
     return warnings[user];
 }
 
 function muteUser(user, duration = DEFAULT_MUTE_MS) {
     mutedUsers[user] = true;
+    userJoinLog[user] = Date.now();
 
     setTimeout(() => {
         delete mutedUsers[user];
@@ -94,11 +140,12 @@ async function safeSetAdminsOnly(chat, enabled) {
 }
 
 async function esAdmin(chat, userId) {
-    const participante = chat.participants.find(
+    const participantes = Array.isArray(chat.participants) ? chat.participants : [];
+    const participante = participantes.find(
         participant => participant.id._serialized === userId
     );
 
-    return Boolean(participante && participante.isAdmin);
+    return Boolean(participante && (participante.isAdmin || participante.isSuperAdmin));
 }
 
 function buildFichaBienvenida(user) {
@@ -177,6 +224,20 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
         return false;
     }
 
+    if (texto === '!help') {
+        await chat.sendMessage([
+            'COMANDOS ADMIN',
+            '',
+            '!expulsar @usuario',
+            '!cerrar',
+            '!abrir',
+            '!aviso @usuario',
+            '!quitaraviso @usuario',
+            '!avisos @usuario'
+        ].join('\n'));
+        return true;
+    }
+
     const admin = await esAdmin(chat, usuario);
     if (!admin) {
         return false;
@@ -224,7 +285,7 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
         if (avisos[objetivo] >= 3) {
             await safeRemoveParticipants(chat, [objetivo]);
             await chat.sendMessage('Expulsado por 3 avisos.');
-            delete avisos[objetivo];
+            deleteUserState(objetivo);
         }
         return true;
     }
@@ -262,20 +323,6 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
         return true;
     }
 
-    if (texto === '!help') {
-        await chat.sendMessage([
-            'COMANDOS ADMIN',
-            '',
-            '!expulsar @usuario',
-            '!cerrar',
-            '!abrir',
-            '!aviso @usuario',
-            '!quitaraviso @usuario',
-            '!avisos @usuario'
-        ].join('\n'));
-        return true;
-    }
-
     return false;
 }
 
@@ -291,6 +338,7 @@ async function manejarModeracionLobby(msg, chat, text, user) {
 
     userMessages[user] = userMessages[user] || [];
     userMessages[user].push(Date.now());
+    userJoinLog[user] = Date.now();
     userMessages[user] = userMessages[user].filter(
         timestamp => Date.now() - timestamp < FLOOD_WINDOW_MS
     );
@@ -329,7 +377,12 @@ async function manejarModeracionLobby(msg, chat, text, user) {
 
         await safeSetAdminsOnly(chat, true);
 
-        setTimeout(async () => {
+        if (reopenTimeout) {
+            clearTimeout(reopenTimeout);
+        }
+
+        reopenTimeout = setTimeout(async () => {
+            reopenTimeout = null;
             await safeSetAdminsOnly(chat, false);
         }, REOPEN_GROUP_MS);
 
@@ -346,6 +399,7 @@ async function manejarFichaLobby(msg, chat, text, user) {
 
     usuariosFicha[user] = true;
     delete usuariosPendientes[user];
+    userJoinLog[user] = Date.now();
     logUser(user, 'FICHA COMPLETADA');
 
     try {
@@ -376,6 +430,7 @@ async function manejarFichaLobby(msg, chat, text, user) {
 
         setTimeout(async () => {
             await safeRemoveParticipants(chat, [user]);
+            deleteUserState(user);
         }, 3000);
     } catch (error) {
         console.error('No se pudo anadir al usuario al grupo destino:', error.message);
@@ -388,12 +443,12 @@ async function manejarFichaLobby(msg, chat, text, user) {
 client.on('qr', async qr => {
     try {
         const qrDataUrl = await QRCode.toDataURL(qr, {
-            width: 420,
-            margin: 2
+            width: 220,
+            margin: 1
         });
 
-        console.log('QR en formato imagen base64:');
-        console.log(qrDataUrl);
+        console.log('QR generado. Copia este data URL solo si lo necesitas:');
+        console.log(qrDataUrl.slice(0, 120) + '...');
     } catch (error) {
         console.error('No se pudo generar el QR en base64:', error.message);
     }
@@ -401,15 +456,6 @@ client.on('qr', async qr => {
 
 client.on('ready', async () => {
     console.log('Bot unificado activo.');
-
-    const chats = await client.getChats();
-    chats.forEach(chat => {
-        if (chat.isGroup) {
-            console.log(`Grupo: ${chat.name}`);
-            console.log(`ID: ${chat.id._serialized}`);
-            console.log('-------------------');
-        }
-    });
 });
 
 client.on('group_join', async notification => {
@@ -441,5 +487,7 @@ client.on('message', async msg => {
 
     await manejarFichaLobby(msg, chat, text, user);
 });
+
+setInterval(cleanupOldState, CLEANUP_INTERVAL_MS);
 
 client.initialize();
