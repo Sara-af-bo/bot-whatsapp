@@ -8,7 +8,7 @@ const ELITE_ID = "120363426931376573@g.us";
 const GRUPOS_PERMITIDOS = [LOBBY_ID, ROOKIE_ID, ELITE_ID];
 
 const client = new Client({
-    authStrategy: new LocalAuth(),
+authStrategy: new LocalAuth({ clientId: "admin" }),
     puppeteer: {
         executablePath: '/usr/bin/chromium',
         headless: true,
