@@ -1,6 +1,5 @@
 FROM node:18
 
-# Instalar dependencias necesarias para Puppeteer
 RUN apt-get update && apt-get install -y \
     chromium \
     libglib2.0-0 \
