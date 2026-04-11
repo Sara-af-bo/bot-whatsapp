@@ -6,7 +6,7 @@ const ELITE_ID = "120363426931376573@g.us";
 const ARCHIVE_ID = "120363425009767808@g.us";
 
 const client = new Client({
-    authStrategy: new LocalAuth(),
+authStrategy: new LocalAuth({ clientId: "roles" }),
     puppeteer: {
         executablePath: '/usr/bin/chromium',
         headless: true,
