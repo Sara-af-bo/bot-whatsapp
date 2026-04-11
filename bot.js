@@ -1,4 +1,5 @@
 const express = require('express');
+const { MongoClient } = require('mongodb');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const QRCode = require('qrcode');
 
@@ -19,6 +20,7 @@ const FLOOD_LIMIT = 5;
 const DEFAULT_MUTE_MS = 60 * 1000;
 const REMINDER_MS = 12 * 60 * 60 * 1000;
 const KICK_DELAY_MS = 24 * 60 * 60 * 1000;
+const FICHA_EXIT_DELAY_MS = 10 * 60 * 1000;
 const REOPEN_GROUP_MS = 10 * 60 * 1000;
 const STALE_USER_TTL_MS = 6 * 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 30 * 60 * 1000;
@@ -32,6 +34,18 @@ const BAD_STATE_RESTART_THRESHOLD = 5;
 const WEB_PORT = 3000;
 const MAX_RSS_MB = Number(process.env.MAX_RSS_MB || 420);
 const MAX_HEAP_MB = Number(process.env.MAX_HEAP_MB || 220);
+const MONGODB_URI = process.env.MONGODB_URI || '';
+const MONGODB_DB = process.env.MONGODB_DB || 'draxorix_bot';
+const STATE_SAVE_DEBOUNCE_MS = 1000;
+const TRACKED_GROUP_IDS = Object.values(GROUP_IDS);
+const PERSISTED_CHAT_ACTIONS = new Set([
+    'GROUP_JOIN',
+    'GROUP_LEAVE',
+    'DELETE_MESSAGE',
+    'REMOVE_PARTICIPANTS',
+    'SET_ADMINS_ONLY',
+    'FORWARD_FICHA'
+]);
 
 const warnings = {};
 const mutedUsers = {};
@@ -39,6 +53,7 @@ const userMessages = {};
 const usuariosPendientes = {};
 const usuariosFicha = {};
 const userJoinLog = {};
+const userLeaveLog = {};
 const avisos = {};
 const reminderTimeouts = new Map();
 const kickTimeouts = new Map();
@@ -56,6 +71,13 @@ let latestQR = null;
 let badStateCount = 0;
 let scheduledRestartTimeout = null;
 let isChromiumConnected = false;
+let mongoClient = null;
+let mongoDb = null;
+let mongoStateCollection = null;
+let mongoEventsCollection = null;
+let mongoFichasCollection = null;
+let pendingStateSaveTimeout = null;
+let stateSaveInFlight = null;
 const monitoredChromiumPages = new WeakSet();
 
 const app = express();
@@ -151,6 +173,128 @@ function clearTimer(timer) {
     if (timer) {
         clearTimeout(timer);
     }
+}
+
+function getPersistentStateSnapshot() {
+    return {
+        warnings,
+        mutedUsers,
+        userMessages,
+        usuariosPendientes,
+        usuariosFicha,
+        userJoinLog,
+        userLeaveLog,
+        avisos
+    };
+}
+
+function assignLoadedState(target, source) {
+    Object.keys(target).forEach(key => delete target[key]);
+    Object.assign(target, source || {});
+}
+
+async function connectMongo() {
+    if (!MONGODB_URI) {
+        console.warn('MongoDB no configurado. Define MONGODB_URI para guardar datos.');
+        return;
+    }
+
+    mongoClient = new MongoClient(MONGODB_URI);
+    await mongoClient.connect();
+    mongoDb = mongoClient.db(MONGODB_DB);
+    mongoStateCollection = mongoDb.collection('bot_state');
+    mongoEventsCollection = mongoDb.collection('bot_events');
+    mongoFichasCollection = mongoDb.collection('fichas');
+    await mongoStateCollection.createIndex({ _id: 1 }, { unique: true });
+    await mongoEventsCollection.createIndex({ createdAt: -1 });
+    await mongoFichasCollection.createIndex({ userId: 1 }, { unique: true });
+    console.log(`MongoDB conectado a la base "${MONGODB_DB}".`);
+}
+
+async function loadPersistentState() {
+    if (!mongoStateCollection) {
+        return;
+    }
+
+    const snapshot = await mongoStateCollection.findOne({ _id: 'runtime_state' });
+    if (!snapshot || !snapshot.data) {
+        return;
+    }
+
+    assignLoadedState(warnings, snapshot.data.warnings);
+    assignLoadedState(mutedUsers, snapshot.data.mutedUsers);
+    assignLoadedState(userMessages, snapshot.data.userMessages);
+    assignLoadedState(usuariosPendientes, snapshot.data.usuariosPendientes);
+    assignLoadedState(usuariosFicha, snapshot.data.usuariosFicha);
+    assignLoadedState(userJoinLog, snapshot.data.userJoinLog);
+    assignLoadedState(userLeaveLog, snapshot.data.userLeaveLog);
+    assignLoadedState(avisos, snapshot.data.avisos);
+    console.log('Estado del bot restaurado desde MongoDB.');
+}
+
+async function savePersistentStateNow() {
+    if (!mongoStateCollection) {
+        return;
+    }
+
+    const payload = {
+        _id: 'runtime_state',
+        data: getPersistentStateSnapshot(),
+        updatedAt: new Date()
+    };
+
+    await mongoStateCollection.updateOne(
+        { _id: 'runtime_state' },
+        { $set: payload },
+        { upsert: true }
+    );
+}
+
+function scheduleStateSave() {
+    if (!mongoStateCollection) {
+        return;
+    }
+
+    if (pendingStateSaveTimeout) {
+        clearTimeout(pendingStateSaveTimeout);
+    }
+
+    pendingStateSaveTimeout = setTimeout(() => {
+        pendingStateSaveTimeout = null;
+        stateSaveInFlight = savePersistentStateNow()
+            .catch(error => {
+                console.error('No se pudo guardar el estado en MongoDB:', getErrorMessage(error));
+            })
+            .finally(() => {
+                stateSaveInFlight = null;
+            });
+    }, STATE_SAVE_DEBOUNCE_MS);
+}
+
+function insertEventLog(doc) {
+    if (!mongoEventsCollection) {
+        return;
+    }
+
+    mongoEventsCollection.insertOne({
+        ...doc,
+        createdAt: new Date()
+    }).catch(error => {
+        console.error('No se pudo guardar el evento en MongoDB:', getErrorMessage(error));
+    });
+}
+
+function shouldPersistChatEvent(action) {
+    return PERSISTED_CHAT_ACTIONS.has(action);
+}
+
+function getTrackedChatId(chat) {
+    return chat && chat.id ? chat.id._serialized : null;
+}
+
+function isTrackedChat(chat) {
+    const chatId = getTrackedChatId(chat);
+    return Boolean(chatId && TRACKED_GROUP_IDS.includes(chatId));
 }
 
 function getErrorMessage(error) {
@@ -280,10 +424,12 @@ function deleteUserState(user) {
     delete userJoinLog[user];
     delete avisos[user];
     clearUserTimers(user);
+    scheduleStateSave();
 }
 
 function cleanupOldState() {
     const now = Date.now();
+    let stateChanged = false;
     const knownUsers = new Set([
         ...Object.keys(warnings),
         ...Object.keys(mutedUsers),
@@ -291,6 +437,7 @@ function cleanupOldState() {
         ...Object.keys(usuariosPendientes),
         ...Object.keys(usuariosFicha),
         ...Object.keys(userJoinLog),
+        ...Object.keys(userLeaveLog),
         ...Object.keys(avisos),
         ...reminderTimeouts.keys(),
         ...kickTimeouts.keys()
@@ -298,13 +445,20 @@ function cleanupOldState() {
 
     for (const user of knownUsers) {
         const lastJoin = userJoinLog[user] || 0;
+        const lastLeave = userLeaveLog[user] && userLeaveLog[user].timestamp ? userLeaveLog[user].timestamp : 0;
         const messages = userMessages[user] || [];
         const lastMessage = messages.length > 0 ? messages[messages.length - 1] : 0;
-        const lastSeen = Math.max(lastJoin, lastMessage);
+        const lastSeen = Math.max(lastJoin, lastLeave, lastMessage);
 
         if (!lastSeen || now - lastSeen > STALE_USER_TTL_MS) {
             deleteUserState(user);
+            delete userLeaveLog[user];
+            stateChanged = true;
         }
+    }
+
+    if (stateChanged) {
+        scheduleStateSave();
     }
 
     if (typeof global.gc === 'function') {
@@ -314,6 +468,14 @@ function cleanupOldState() {
 
 function logUser(user, action) {
     console.log(`[LOG] ${user} -> ${action}`);
+
+    if (action === 'JOIN' || action === 'LEAVE' || action === 'FICHA COMPLETADA') {
+        insertEventLog({
+            type: 'user_log',
+            user,
+            action
+        });
+    }
 }
 
 function getChatLabel(chat) {
@@ -329,6 +491,16 @@ function getChatLabel(chat) {
 function logChatEvent(chat, action, details = '') {
     const suffix = details ? ` | ${details}` : '';
     console.log(`[CHAT] ${action} | ${getChatLabel(chat)}${suffix}`);
+
+    if (shouldPersistChatEvent(action) && isTrackedChat(chat)) {
+        insertEventLog({
+            type: 'chat_event',
+            action,
+            details,
+            chatId: getTrackedChatId(chat),
+            chatName: chat ? getChatLabel(chat) : null
+        });
+    }
 }
 
 function logIncomingMessage(chat, user, text, fromMe) {
@@ -341,15 +513,18 @@ function logIncomingMessage(chat, user, text, fromMe) {
 function addWarning(user) {
     warnings[user] = (warnings[user] || 0) + 1;
     userJoinLog[user] = Date.now();
+    scheduleStateSave();
     return warnings[user];
 }
 
 function muteUser(user, duration = DEFAULT_MUTE_MS) {
     mutedUsers[user] = true;
     userJoinLog[user] = Date.now();
+    scheduleStateSave();
 
     setTimeout(() => {
         delete mutedUsers[user];
+        scheduleStateSave();
     }, duration);
 }
 
@@ -360,6 +535,75 @@ function esLink(text) {
 function extraerEdad(texto) {
     const match = texto.match(/edad[:\s]*([0-9]{1,2})/i);
     return match ? parseInt(match[1], 10) : null;
+}
+
+function extraerCampo(texto, etiqueta) {
+    const escaped = etiqueta.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`${escaped}\\s*[:：]\\s*(.+)`, 'i');
+    const match = texto.match(regex);
+    return match ? match[1].trim() : '';
+}
+
+function normalizarValorFicha(valor) {
+    return valor.replace(/\s+/g, ' ').trim();
+}
+
+function parseNombreCompleto(texto) {
+    const nombreCompleto = normalizarValorFicha(extraerCampo(texto, 'nombre'));
+    const partes = nombreCompleto.split(' ').filter(Boolean);
+
+    return {
+        nombreCompleto,
+        nombre: partes[0] || '',
+        apellido: partes.length > 1 ? partes.slice(1).join(' ') : ''
+    };
+}
+
+function extraerCumpleanos(texto) {
+    return normalizarValorFicha(
+        extraerCampo(texto, 'fecha de cumpleaños') || extraerCampo(texto, 'fecha de cumpleanos')
+    );
+}
+
+function extraerSigno(texto) {
+    return normalizarValorFicha(extraerCampo(texto, 'signo zodiaco'));
+}
+
+function parseFichaData(texto, userId) {
+    const nombreData = parseNombreCompleto(texto);
+    const edad = extraerEdad(texto);
+    const cumpleanos = extraerCumpleanos(texto);
+    const signo = extraerSigno(texto);
+
+    return {
+        userId,
+        nombre: nombreData.nombre,
+        apellido: nombreData.apellido,
+        nombreCompleto: nombreData.nombreCompleto,
+        edad: edad || null,
+        cumpleanos,
+        signo
+    };
+}
+
+async function saveFichaData(fichaData) {
+    if (!mongoFichasCollection) {
+        return;
+    }
+
+    await mongoFichasCollection.updateOne(
+        { userId: fichaData.userId },
+        {
+            $set: {
+                ...fichaData,
+                updatedAt: new Date()
+            },
+            $setOnInsert: {
+                createdAt: new Date()
+            }
+        },
+        { upsert: true }
+    );
 }
 
 function getUserId(msg) {
@@ -430,36 +674,119 @@ async function esAdmin(chat, userId) {
 
 function buildFichaBienvenida(user) {
     return [
-        `Welcome @${user.split('@')[0]}`,
+        'ំஂ◌｡೨⑅*.      🐉',
         '',
-        'Ficha de presentacion:',
-        '- Nombre:',
-        '- Genero o pronombres:',
-        '- Edad:',
-        '- Fecha de cumpleanos:',
-        '- Signo zodiaco:',
-        '- Hobbies favoritos:',
-        '- Series/libros/peliculas favoritas:',
-        '- Como te describirias:',
-        '- Cual es tu mayor deseo:',
-        '- Aceptas respetar las reglas:',
-        '- En que otros clanes estas o estabas:',
-        '- Captura del codigo de amistad de Among Us (obligatorio)',
-        '- Foto tuya (opcional)'
+        `☰ ⌇─➭ welcome ${formatUserMention(user)} ﹀﹀ ੈ✩‧₊.  ↷`,
+        '',
+        '︽❨💣 ೃ/ੈː͡➘ Ficha de presentación',
+        '',
+        ' 彡ૢ⃢🫯 ·੭  Nombre: ',
+        '',
+        ' 彡ૢ⃢👑 ·੭ Género o pronombres:',
+        '',
+        ' 彡ૢ⃢🐉 ·੭ Edad: ',
+        '',
+        ' 彡ૢ⃢🧶 ·੭ Fecha de cumpleaños: ',
+        '',
+        ' 彡ૢ⃢💸 ·੭ Signo zodiaco:',
+        '',
+        ' 彡ૢ⃢🎧 ·੭ ¿Hobbies favoritos?:',
+        '',
+        ' 彡ૢ⃢💣 ·੭ ¿Series/libros/peliculas favoritas?:',
+        '',
+        ' 彡ૢ⃢🦩 ·੭ ¿Con que palabras te describirias?:',
+        '',
+        ' 彡ૢ⃢🎓 ·੭ ¿Cuál es tu mayor deseo?:',
+        '',
+        ' 彡ૢ⃢👑 ·੭ ¿Aceptas respetar las reglas?: ',
+        '',
+        ' 彡ૢ⃢🦋 ·੭ ¿En que otros clanes estás o estuviste? ',
+        '',
+        ' 彡ૢ⃢🪐 ·੭ Captura del codigo de amistad de among us (obligatorio)',
+        '',
+        ' 彡ૢ⃢🐿️ ·੭ Foto de tu carita hermosa (opcional)',
+        '',
+        '   ំஂ◌｡೨⑅*.      🐉'
+    ].join('\n');
+}
+
+function buildLobbyBienvenida(user) {
+    return [
+        `Welcome ${formatUserMention(user)}`,
+        '',
+        'Completa tu ficha de presentacion y revisa las reglas del clan.'
     ].join('\n');
 }
 
 function buildDestinoBienvenida(user) {
     return [
-        'DRAXORIX',
+        '╔═⚔️═🐉 DRΛXØRIX 死 ══⚔️═╗',
+        '　　　☠️ 𝘽 𝙄 𝙀 𝙉 𝙑 𝙀 𝙉 𝙄 𝘿 𝙓 ☠️',
+        '╚══🔥═══════════🔥═══╝',
         '',
-        `Bienvenidx @${user.split('@')[0]}`,
-        'No mercy. Only DRAXORIX.'
+        '꒰ 🫯⌒⌒⌒⌒ ೄ ༘ «⸙︽︽︽',
+        `　　　➤ ${formatUserMention(user)}`,
+        'ೄ ༘ «⸙︽︽︽ ⌒⌒⌒⌒💥꒰',
+        '',
+        '𖤐 Has entrado en DRΛXØRIX 死',
+        'un clan donde solo sobreviven los que respetan el orden dentro del caos',
+        '',
+        '⊱╌╍⟞❬❀ೄ๑˚｡˚ ⛓️ *ೄ๑❀❭⟝╌╍╌⊰',
+        '',
+        '-ˏˋ¡!☠️ೄ Aquí no hay lugar para el debil',
+        '-ˏˋ¡!☠️ೄ Se exige respeto absoluto',
+        '-ˏˋ¡!☠️ೄ La traición se paga caro',
+        '',
+        '⊱╌╍⟞❬❀ೄ๑˚｡˚ ⛓️ *ೄ๑❀❭⟝╌╍╌⊰',
+        '',
+        '-ˏˋ¡!⚔️ೄ  Respeta las normas o cae',
+        ' -ˏˋ¡!⚔️ೄ Demuestra tu nivel en las rooms',
+        '-ˏˋ¡!⚔️ೄ  Gana tu lugar en el clan',
+        '',
+        '⊱╌╍⟞❬❀ೄ๑˚｡˚ ⛓️ *ೄ๑❀❭⟝╌╍╌⊰',
+        '',
+        '╰➤ NO MERCY · ONLY DRΛXØRIX 死 🐉🔥'
+    ].join('\n');
+}
+
+function buildReglasClan() {
+    return [
+        'ୖୣ﹍﹍﹍﹍✿⡪⡪⡪̶᷍┊̶֑ . . . .⛓️‍💥~➴',
+        '',
+        '༊ཱི࿆᪰⃝🐉ླྀ DRΛXØRIX 死 | 𝙍𝙐𝙇𝙀𝙎: ཻུ࿆༅̼',
+        '',
+        '𓏸𓊔🪻⤾·˚ Para identificarnos como clan, utilizaremos el símbolo: 死',
+        '',
+        '𓏸𓊔🍃⤾·˚ En este clan contamos con una serie de normas que todos los miembros deben respetar:',
+        '',
+        '❙˗ˋ⌦;🐿️﹚ะ❱• No se permite el flood (mensajes excesivos) ni el spam.',
+        '',
+        '❙˗ˋ⌦;🦩﹚ะ❱• El envío de enlaces externos está restringido y requiere autorización previa de los administradores, especialmente si son de procedencia dudosa.',
+        '',
+        '❙˗ˋ⌦;🌵﹚ะ❱• Está prohibido el acoso, tanto hacia mujeres como hacia hombres, salvo consentimiento explícito.',
+        '',
+        '❙˗ˋ⌦;🐦‍🔥﹚ะ❱• En este clan todos somos iguales: se exige respeto, empatía y buen trato entre los miembros.',
+        '',
+        '❙˗ˋ⌦;🪺﹚ะ❱• La creación de códigos y salas solo está permitida con autorización previa de los administradores y debe hacerse con responsabilidad.',
+        '',
+        '𓏸𓊔🦋⤾·˚ Esperamos que disfruten su estancia y cumplan las normas de manera responsable.',
+        '',
+        '𓏸𓊔🕷️⤾·˚ Cualquier miembro que incumpla las normas será sancionado de forma correspondiente.',
+        '',
+        'ୖୣ﹍﹍﹍﹍✿⡪⡪⡪̶᷍┊̶֑ . . . .⛓️‍💥~➴'
     ].join('\n');
 }
 
 function formatUserMention(user) {
     return `@${user.split('@')[0]}`;
+}
+
+function formatTimestamp(date) {
+    return new Intl.DateTimeFormat('es-ES', {
+        dateStyle: 'full',
+        timeStyle: 'short',
+        timeZone: 'Europe/Madrid'
+    }).format(date);
 }
 
 async function optimizeChromiumResources(currentClient) {
@@ -526,12 +853,14 @@ async function manejarEntradaLobby(notification) {
 
     const user = notification.recipientIds[0];
     const number = user.split('@')[0];
+    const lastLeave = userLeaveLog[user];
 
     userJoinLog[user] = Date.now();
     usuariosPendientes[user] = true;
     touchHealth();
     logUser(user, 'JOIN');
     logChatEvent(chat, 'GROUP_JOIN', `usuario=${user}`);
+    scheduleStateSave();
 
     if (!ALLOWED_PREFIXES.some(prefix => number.startsWith(prefix))) {
         logChatEvent(chat, 'SEND_MESSAGE', `motivo=numero-no-permitido usuario=${user}`);
@@ -541,7 +870,18 @@ async function manejarEntradaLobby(notification) {
         return;
     }
 
+    if (lastLeave && lastLeave.chatId === chat.id._serialized) {
+        logChatEvent(chat, 'SEND_MESSAGE', `motivo=reingreso-reciente usuario=${user}`);
+        await chat.sendMessage(
+            `${formatUserMention(user)} salió del grupo el día ${formatTimestamp(new Date(lastLeave.timestamp))}.`,
+            { mentions: [user] }
+        );
+    }
+
     logChatEvent(chat, 'SEND_MESSAGE', `motivo=ficha-bienvenida usuario=${user}`);
+    await chat.sendMessage(`${buildLobbyBienvenida(user)}\n\n${buildReglasClan()}`, {
+        mentions: [user]
+    });
     await chat.sendMessage(buildFichaBienvenida(user), {
         mentions: [user]
     });
@@ -663,6 +1003,7 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
         const objetivo = mencionados[0];
         avisos[objetivo] = (avisos[objetivo] || 0) + 1;
         userJoinLog[objetivo] = Date.now();
+        scheduleStateSave();
 
         logChatEvent(chat, 'SEND_MESSAGE', `motivo=aviso objetivo=${objetivo} solicitado-por=${usuario}`);
         await chat.sendMessage(
@@ -694,6 +1035,7 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
         const objetivo = mencionados[0];
         avisos[objetivo] = 0;
         userJoinLog[objetivo] = Date.now();
+        scheduleStateSave();
 
         logChatEvent(chat, 'SEND_MESSAGE', `motivo=avisos-reiniciados objetivo=${objetivo} solicitado-por=${usuario}`);
         await chat.sendMessage(`Avisos reiniciados para ${formatUserMention(objetivo)} por ${formatUserMention(usuario)}.`, {
@@ -743,6 +1085,7 @@ async function manejarModeracionLobby(msg, chat, text, user) {
     userMessages[user] = userMessages[user].filter(
         timestamp => now - timestamp < FLOOD_WINDOW_MS
     );
+    scheduleStateSave();
 
     if (userMessages[user].length > FLOOD_LIMIT) {
         logChatEvent(chat, 'SEND_MESSAGE', `motivo=spam-detectado usuario=${user}`);
@@ -806,11 +1149,14 @@ async function manejarFichaLobby(msg, chat, text, user) {
         return false;
     }
 
+    const fichaData = parseFichaData(text, user);
+
     usuariosFicha[user] = true;
     delete usuariosPendientes[user];
     userJoinLog[user] = Date.now();
     clearUserTimers(user);
     logUser(user, 'FICHA COMPLETADA');
+    scheduleStateSave();
 
     try {
         const archive = await client.getChatById(GROUP_IDS.ARCHIVE);
@@ -820,7 +1166,13 @@ async function manejarFichaLobby(msg, chat, text, user) {
         console.error('No se pudo reenviar la ficha al archivo:', error.message);
     }
 
-    const edad = extraerEdad(text);
+    try {
+        await saveFichaData(fichaData);
+    } catch (error) {
+        console.error('No se pudo guardar la ficha en MongoDB:', getErrorMessage(error));
+    }
+
+    const edad = fichaData.edad;
     if (!edad) {
         logChatEvent(chat, 'SEND_MESSAGE', `motivo=edad-no-detectada usuario=${user}`);
         await chat.sendMessage('No se detecto la edad correctamente.');
@@ -833,6 +1185,7 @@ async function manejarFichaLobby(msg, chat, text, user) {
     try {
         const grupoDestino = await client.getChatById(destinoId);
         await grupoDestino.addParticipants([user]);
+        logChatEvent(grupoDestino, 'GROUP_JOIN', `usuario-anadido=${user}`);
 
         logChatEvent(grupoDestino, 'SEND_MESSAGE', `motivo=bienvenida-destino usuario=${user}`);
         await grupoDestino.sendMessage(buildDestinoBienvenida(user), {
@@ -840,12 +1193,22 @@ async function manejarFichaLobby(msg, chat, text, user) {
         });
 
         logChatEvent(chat, 'SEND_MESSAGE', `motivo=ficha-completada usuario=${user} destino=${grupoNombre}`);
-        await chat.sendMessage(`Ficha completada. Usuario anadido a ${grupoNombre}.`);
+        await chat.sendMessage([
+            'Gracias por completar tu ficha de presentación',
+            '',
+            'Este grupo es solo para presentaciones, por lo que serás removido/a en breve.',
+            '',
+            'Para continuar y disfrutar de la experiencia completa, solicitá unirte a los siguientes grupos:',
+            'Rooms',
+            'Archive',
+            '',
+            `Seras añadido a ${grupoNombre}. Gracias por unirte.`
+        ].join('\n'));
 
         setTimeout(async () => {
             await safeRemoveParticipants(chat, [user]);
             deleteUserState(user);
-        }, 3000);
+        }, FICHA_EXIT_DELAY_MS);
     } catch (error) {
         console.error('No se pudo anadir al usuario al grupo destino:', error.message);
         await chat.sendMessage('No se pudo anadir al usuario al grupo destino.');
@@ -1097,6 +1460,33 @@ function bindClientEvents(currentClient) {
         }
     });
 
+    currentClient.on('group_leave', async notification => {
+        touchHealth();
+
+        try {
+            const chat = await notification.getChat();
+            const user = notification.recipientIds[0];
+
+            if (!chat || !user) {
+                return;
+            }
+
+            userLeaveLog[user] = {
+                chatId: chat.id._serialized,
+                timestamp: Date.now()
+            };
+
+            logUser(user, 'LEAVE');
+            logChatEvent(chat, 'GROUP_LEAVE', `usuario=${user}`);
+            scheduleStateSave();
+        } catch (error) {
+            const handled = handleChromiumOperationError(error, 'group_leave', { restart: true });
+            if (!handled) {
+                console.error('Error en group_leave:', getErrorMessage(error));
+            }
+        }
+    });
+
     currentClient.on('message', async msg => {
         touchHealth();
 
@@ -1157,6 +1547,26 @@ async function startClient() {
     }
 }
 
+async function shutdownPersistence() {
+    clearTimer(pendingStateSaveTimeout);
+    pendingStateSaveTimeout = null;
+
+    try {
+        await savePersistentStateNow();
+    } catch (error) {
+        console.error('No se pudo guardar el estado final en MongoDB:', getErrorMessage(error));
+    }
+
+    if (stateSaveInFlight) {
+        await stateSaveInFlight;
+    }
+
+    if (mongoClient) {
+        await mongoClient.close();
+        mongoClient = null;
+    }
+}
+
 function startSchedulers() {
     if (!cleanupInterval) {
         cleanupInterval = setInterval(() => {
@@ -1188,17 +1598,25 @@ process.on('uncaughtException', error => {
 process.on('SIGTERM', async () => {
     console.log('SIGTERM recibido. Cerrando cliente...');
     await destroyCurrentClient();
+    await shutdownPersistence();
     process.exit(0);
 });
 
 process.on('SIGINT', async () => {
     console.log('SIGINT recibido. Cerrando cliente...');
     await destroyCurrentClient();
+    await shutdownPersistence();
     process.exit(0);
 });
 
-startSchedulers();
-startClient().catch(error => {
+async function bootstrap() {
+    await connectMongo();
+    await loadPersistentState();
+    startSchedulers();
+    await startClient();
+}
+
+bootstrap().catch(error => {
     console.error('No se pudo iniciar el cliente:', getErrorMessage(error));
     restartClient('initial start failed');
 });
