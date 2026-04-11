@@ -1,88 +1,171 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
 
+const GRUPO_ID = "120363408940060754@g.us";
+
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
         executablePath: '/usr/bin/chromium',
         headless: true,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox'
-        ]
+        args: ['--no-sandbox']
     }
 });
 
-const GRUPO_ID = "120363408940060754@g.us";
+// 🧠 MEMORIA
+const warnings = {};
+const mutedUsers = {};
+const userMessages = {};
+const usuariosPendientes = {};
+const usuariosFicha = {};
+const userJoinLog = {};
 
-// 🚫 PALABRAS PROHIBIDAS (puedes añadir más)
-const insultos = [
-    "puta", "gilipollas", "idiota", "subnormal", "mierda", "imbecil"
-];
+// 🚫 INSULTOS
+const insultos = ["puta","gilipollas","idiota","imbecil","subnormal"];
 
-// 🔗 DETECTOR DE LINKS
-const linkRegex = /(https?:\/\/|www\.|\.com|\.net|\.org)/i;
+// 🌍 PREFIJOS PERMITIDOS (España + Latam)
+const allowedPrefixes = ["34","52","54","57","51","58","56","593","591","595","598"];
 
-// 📩 DETECTAR MENSAJES
-client.on('message', async (msg) => {
-    const chat = await msg.getChat();
+// 🔗 DETECTOR LINK
+const esLink = (text) => /(https?:\/\/|www\.|\.com|\.gg|\.net)/i.test(text);
 
-    if (!chat.isGroup) return;
+// 📊 REGISTRO
+function logUser(user, action) {
+    console.log(`[LOG] ${user} → ${action}`);
+}
+
+// ⚠️ WARNINGS
+function addWarning(user) {
+    if (!warnings[user]) warnings[user] = 0;
+    warnings[user]++;
+    return warnings[user];
+}
+
+// 🔇 MUTE
+function muteUser(user, duration = 60000) {
+    mutedUsers[user] = true;
+
+    setTimeout(() => {
+        delete mutedUsers[user];
+    }, duration);
+}
+
+// 📲 ENTRADA
+client.on('group_join', async (notification) => {
+    const chat = await notification.getChat();
     if (chat.id._serialized !== GRUPO_ID) return;
 
-    const texto = msg.body.toLowerCase();
-    const user = msg.author || msg.from;
+    const user = notification.recipientIds[0];
 
-    // 🚫 DETECTAR LINKS
-    if (linkRegex.test(texto)) {
-        console.log("🔗 Link detectado");
+    userJoinLog[user] = Date.now();
+    usuariosPendientes[user] = true;
 
-        try {
-            await msg.delete(true); // borrar mensaje
-            await chat.removeParticipants([user]); // expulsar
-        } catch (e) {
-            console.log("Error eliminando usuario:", e);
+    logUser(user, "JOIN");
+
+    // 🌍 FILTRO NUMERO
+    const number = user.split("@")[0];
+
+    if (!allowedPrefixes.some(p => number.startsWith(p))) {
+        await chat.sendMessage("🚫 Número no permitido.");
+        await chat.removeParticipants([user]);
+        return;
+    }
+
+    // ⏳ RECORDATORIO 12h
+    setTimeout(async () => {
+        if (!usuariosFicha[user]) {
+            await chat.sendMessage("⏳ Recuerda rellenar tu ficha.");
         }
+    }, 12 * 60 * 60 * 1000);
+
+    // ⏳ EXPULSIÓN 24h
+    setTimeout(async () => {
+        if (!usuariosFicha[user]) {
+            await chat.sendMessage("❌ No rellenaste ficha en 24h. Eliminado.");
+            await chat.removeParticipants([user]);
+        }
+    }, 24 * 60 * 60 * 1000);
+});
+
+// 📩 MENSAJES
+client.on('message', async (msg) => {
+    const chat = await msg.getChat();
+    if (!chat.isGroup || chat.id._serialized !== GRUPO_ID) return;
+
+    const user = msg.author || msg.from;
+    const text = msg.body.toLowerCase();
+
+    // 🔇 MUTE SIMULADO
+    if (mutedUsers[user]) {
+        await msg.delete(true);
+        return;
+    }
+
+    // 📊 ANTIFLOOD
+    if (!userMessages[user]) userMessages[user] = [];
+    userMessages[user].push(Date.now());
+
+    userMessages[user] = userMessages[user].filter(t => Date.now() - t < 5000);
+
+    if (userMessages[user].length > 5) {
+        await chat.sendMessage("⚠️ Spam detectado → mute 1 min");
+        muteUser(user);
+        return;
+    }
+
+    // 🔗 LINKS
+    if (esLink(text)) {
+        await msg.delete(true);
+
+        const w = addWarning(user);
+
+        if (w >= 2) {
+            await chat.sendMessage("🚫 Enlaces prohibidos → expulsado");
+            await chat.removeParticipants([user]);
+        } else {
+            await chat.sendMessage("⚠️ Enlaces no permitidos (warning)");
+        }
+        return;
+    }
+
+    // 🚫 INSULTOS
+    if (insultos.some(i => text.includes(i))) {
+        const w = addWarning(user);
+
+        if (w === 1) {
+            await chat.sendMessage("⚠️ Respeta las normas (warning)");
+        } else if (w === 2) {
+            await chat.sendMessage("🔇 Mute por comportamiento");
+            muteUser(user, 60000);
+        } else {
+            await chat.sendMessage("❌ Expulsado por faltas de respeto");
+            await chat.removeParticipants([user]);
+        }
+
+        // 🔒 CERRAR GRUPO
+        await chat.setMessagesAdminsOnly(true);
+
+        // 🔓 ABRIR EN 10 MIN
+        setTimeout(async () => {
+            await chat.setMessagesAdminsOnly(false);
+        }, 10 * 60 * 1000);
 
         return;
     }
 
-    // 🤬 DETECTAR INSULTOS
-    if (insultos.some(p => texto.includes(p))) {
-        console.log("⚠️ Insulto detectado");
+    // 📋 DETECTAR FICHA
+    if (text.includes("nombre") && text.includes("edad")) {
+        usuariosFicha[user] = true;
 
         await chat.sendMessage(
-            "⚠️ Se ha detectado faltas de respeto.\nEl grupo se cerrará hasta que aparezcan los administradores."
+            "✅ Ficha completada. Espera a los administradores."
         );
 
-        try {
-            await chat.setMessagesAdminsOnly(true); // solo admins pueden escribir
-        } catch (e) {
-            console.log("Error cerrando grupo:", e);
-        }
-
-        return;
-    }
-
-    // ✅ DETECTAR FICHA COMPLETA (simple)
-    if (
-        texto.includes("nombre") &&
-        texto.includes("edad") &&
-        texto.includes("hobbies")
-    ) {
-        await chat.sendMessage(`
-Cuando se conecten los administradores serán añadidos a sus grupos correspondientes.
-
-Si tienen alguna configuración que no permite añadir personas externas a ustedes, cambien sus ajustes o añadidlos a vuestros contactos.
-
-Manténganse a la espera en este grupo.
-
-Gracias por unirte. Que disfrutes de tu estancia ✨
-`);
+        logUser(user, "FICHA COMPLETADA");
     }
 });
 
 client.on('ready', () => {
-    console.log("🔥 BOT PRO ACTIVADO");
+    console.log("🔥 BOT ULTRA ACTIVO");
 });
 
 client.initialize();
