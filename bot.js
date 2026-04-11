@@ -26,6 +26,8 @@ const CLEANUP_INTERVAL_MS = 30 * 60 * 1000;
 const HEALTHCHECK_INTERVAL_MS = 2 * 60 * 1000;
 const FORCED_RECYCLE_MS = 6 * 60 * 60 * 1000;
 const RESTART_DELAY_MS = 15000;
+const MIN_RESTART_INTERVAL_MS = 2 * 60 * 1000;
+const BAD_STATE_RESTART_THRESHOLD = 3;
 const WEB_PORT = 3000;
 const MAX_RSS_MB = Number(process.env.MAX_RSS_MB || 420);
 const MAX_HEAP_MB = Number(process.env.MAX_HEAP_MB || 220);
@@ -49,6 +51,8 @@ let browserDisconnectHandler = null;
 let lastRestartAt = 0;
 let lastHealthyAt = 0;
 let latestQR = null;
+let badStateCount = 0;
+let scheduledRestartTimeout = null;
 
 const app = express();
 
@@ -89,9 +93,34 @@ function createClient() {
         qrMaxRetries: 20,
         puppeteer: {
             headless: true,
+            protocolTimeout: 180000,
+            ignoreHTTPSErrors: true,
             args: [
                 '--no-sandbox',
-                '--disable-setuid-sandbox'
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--no-zygote',
+                '--no-first-run',
+                '--disable-extensions',
+                '--disable-background-networking',
+                '--disable-background-timer-throttling',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-breakpad',
+                '--disable-component-extensions-with-background-pages',
+                '--disable-default-apps',
+                '--disable-features=Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints',
+                '--disable-hang-monitor',
+                '--disable-ipc-flooding-protection',
+                '--disable-popup-blocking',
+                '--disable-prompt-on-repost',
+                '--disable-renderer-backgrounding',
+                '--disable-sync',
+                '--metrics-recording-only',
+                '--mute-audio',
+                '--no-default-browser-check',
+                '--password-store=basic',
+                '--use-mock-keychain'
             ]
         }
     });
@@ -306,7 +335,7 @@ async function optimizeChromiumResources(currentClient) {
         if (browser && !browserDisconnectHandler) {
             browserDisconnectHandler = () => {
                 console.error('Chromium se desconecto.');
-                restartClient('browser disconnected');
+                browserDisconnectHandler = null;
             };
 
             browser.once('disconnected', browserDisconnectHandler);
@@ -602,7 +631,6 @@ async function healthcheckClient() {
 
     if (rssMb >= MAX_RSS_MB || heapMb >= MAX_HEAP_MB) {
         logMemory('threshold-exceeded');
-        await restartClient(`memory threshold reached rss=${rssMb} heap=${heapMb}`);
         return;
     }
 
@@ -611,28 +639,34 @@ async function healthcheckClient() {
     }
 
     try {
-        if (!client.pupBrowser || !client.pupBrowser.isConnected()) {
-            await restartClient('browser not connected');
-            return;
-        }
-
-        if (!client.pupPage || client.pupPage.isClosed()) {
-            await restartClient('page closed');
-            return;
-        }
-
-        await optimizeChromiumResources(client);
-
         const state = await client.getState();
         touchHealth();
+        console.log(`healthcheck -> state=${state}`);
 
-        if (state === 'CONFLICT' || state === 'UNLAUNCHED' || state === 'UNPAIRED' || state === 'UNPAIRED_IDLE') {
-            await restartClient(`bad state ${state}`);
+        if (state === 'CONNECTED' || state === 'OPENING' || state === 'PAIRING') {
+            badStateCount = 0;
             return;
         }
+
+        if (state === 'CONFLICT') {
+            badStateCount = 0;
+            return;
+        }
+
+        if (state === 'UNLAUNCHED' || state === 'UNPAIRED' || state === 'UNPAIRED_IDLE' || state === 'TIMEOUT') {
+            badStateCount += 1;
+            console.error(`healthcheck -> bad state ${state} (${badStateCount}/${BAD_STATE_RESTART_THRESHOLD})`);
+
+            if (badStateCount >= BAD_STATE_RESTART_THRESHOLD) {
+                badStateCount = 0;
+                await restartClient(`bad state ${state}`);
+            }
+            return;
+        }
+
+        badStateCount = 0;
     } catch (error) {
-        console.error('Healthcheck fallo:', error.message);
-        await restartClient('healthcheck failed');
+        console.error('Healthcheck fallo sin reinicio:', error.message);
         return;
     }
 
@@ -677,18 +711,40 @@ async function restartClient(reason) {
         return;
     }
 
+    if (scheduledRestartTimeout) {
+        console.log(`Reinicio ya programado. Motivo omitido: ${reason}`);
+        return;
+    }
+
+    const elapsedSinceLastRestart = Date.now() - lastRestartAt;
+    if (elapsedSinceLastRestart < MIN_RESTART_INTERVAL_MS) {
+        const waitMs = Math.max(RESTART_DELAY_MS, MIN_RESTART_INTERVAL_MS - elapsedSinceLastRestart);
+        console.log(`Reinicio aplazado ${waitMs}ms para evitar bucle. Motivo: ${reason}`);
+
+        scheduledRestartTimeout = setTimeout(() => {
+            scheduledRestartTimeout = null;
+            restartClient(`${reason} (delayed)`).catch(error => {
+                console.error('Fallo en reinicio aplazado:', error.message);
+            });
+        }, waitMs);
+
+        return;
+    }
+
     isRestarting = true;
     console.error(`Reiniciando cliente: ${reason}`);
     logMemory('before-restart');
 
     try {
         await destroyCurrentClient();
+        badStateCount = 0;
 
         if (typeof global.gc === 'function') {
             global.gc();
         }
 
-        setTimeout(() => {
+        scheduledRestartTimeout = setTimeout(() => {
+            scheduledRestartTimeout = null;
             startClient().catch(error => {
                 console.error('Fallo al levantar el cliente tras reinicio:', error.message);
             });
