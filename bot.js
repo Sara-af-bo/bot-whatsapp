@@ -17,7 +17,7 @@ const ADMIN_IDS = [
 
 const ALLOWED_GROUPS = [GROUP_IDS.LOBBY, GROUP_IDS.ROOKIE, GROUP_IDS.ELITE];
 const ALLOWED_PREFIXES = ['34', '52', '54', '57', '51', '58', '56', '593', '591', '595', '598'];
-const INSULTS = ['puta', 'gilipollas', 'idiota', 'imbecil', 'subnormal'];
+const INSULTS = ['puta', 'hijo de puta', 'gilipollas', 'idiota', 'imbecil', 'subnormal', 'cabron', 'capullo', 'mierda', 'payaso'];
 const LINK_REGEX = /(https?:\/\/|www\.|\.com|\.gg|\.net)/i;
 
 const FLOOD_WINDOW_MS = 5000;
@@ -60,6 +60,7 @@ const usuariosFicha = {};
 const userJoinLog = {};
 const userLeaveLog = {};
 const avisos = {};
+const bannedUsers = {};
 const reminderTimeouts = new Map();
 const kickTimeouts = new Map();
 
@@ -212,7 +213,8 @@ function getPersistentStateSnapshot() {
         usuariosFicha,
         userJoinLog,
         userLeaveLog,
-        avisos
+        avisos,
+        bannedUsers
     };
 }
 
@@ -257,6 +259,7 @@ async function loadPersistentState() {
     assignLoadedState(userJoinLog, snapshot.data.userJoinLog);
     assignLoadedState(userLeaveLog, snapshot.data.userLeaveLog);
     assignLoadedState(avisos, snapshot.data.avisos);
+    assignLoadedState(bannedUsers, snapshot.data.bannedUsers);
     console.log('Estado del bot restaurado desde MongoDB.');
 }
 
@@ -455,6 +458,14 @@ function deleteUserState(user) {
     scheduleStateSave();
 }
 
+function isBannedUser(userId) {
+    const normalizedUserId = normalizeWhatsAppId(userId);
+
+    return Object.keys(bannedUsers).some(bannedId => {
+        return bannedId === userId || normalizeWhatsAppId(bannedId) === normalizedUserId;
+    });
+}
+
 function cleanupOldState() {
     const now = Date.now();
     let stateChanged = false;
@@ -597,6 +608,30 @@ function extraerSigno(texto) {
     return normalizarValorFicha(extraerCampo(texto, 'signo zodiaco'));
 }
 
+function normalizeModerationText(text) {
+    return String(text || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function containsInsult(text) {
+    const normalizedText = normalizeModerationText(text);
+
+    if (!normalizedText) {
+        return false;
+    }
+
+    return INSULTS.some(insulto => {
+        const normalizedInsult = normalizeModerationText(insulto);
+        const insultRegex = new RegExp(`(^|\\s)${normalizedInsult}(\\s|$)`, 'i');
+        return insultRegex.test(normalizedText);
+    });
+}
+
 function parseFichaData(texto, userId) {
     const nombreData = parseNombreCompleto(texto);
     const edad = extraerEdad(texto);
@@ -632,6 +667,80 @@ async function saveFichaData(fichaData) {
         },
         { upsert: true }
     );
+}
+
+async function findFichaByUserId(userId) {
+    if (!mongoFichasCollection) {
+        return null;
+    }
+
+    const directMatch = await mongoFichasCollection.findOne({ userId });
+    if (directMatch) {
+        return directMatch;
+    }
+
+    const normalizedUserId = normalizeWhatsAppId(userId);
+    if (!normalizedUserId) {
+        return null;
+    }
+
+    const fichas = await mongoFichasCollection.find({}, { projection: { userId: 1, nombre: 1, apellido: 1, nombreCompleto: 1, edad: 1, cumpleanos: 1, signo: 1, updatedAt: 1, createdAt: 1 } }).toArray();
+    return fichas.find(ficha => normalizeWhatsAppId(ficha.userId) === normalizedUserId) || null;
+}
+
+async function deleteFichaByUserId(userId) {
+    if (!mongoFichasCollection) {
+        return 0;
+    }
+
+    const ficha = await findFichaByUserId(userId);
+    if (!ficha) {
+        return 0;
+    }
+
+    const result = await mongoFichasCollection.deleteOne({ _id: ficha._id });
+    return result.deletedCount || 0;
+}
+
+async function getFichasStats() {
+    if (!mongoFichasCollection) {
+        return null;
+    }
+
+    const fichas = await mongoFichasCollection.find({}, { projection: { edad: 1 } }).toArray();
+    const total = fichas.length;
+    const conEdad = fichas.filter(ficha => Number.isFinite(ficha.edad));
+    const elite = conEdad.filter(ficha => ficha.edad >= 17).length;
+    const rookie = conEdad.filter(ficha => ficha.edad < 17).length;
+    const mediaEdad = conEdad.length
+        ? Math.round((conEdad.reduce((sum, ficha) => sum + ficha.edad, 0) / conEdad.length) * 10) / 10
+        : 0;
+
+    return { total, elite, rookie, mediaEdad };
+}
+
+async function getFichasRank(limit = 10) {
+    if (!mongoFichasCollection) {
+        return [];
+    }
+
+    return mongoFichasCollection
+        .find({ edad: { $type: 'number' } }, { projection: { userId: 1, nombre: 1, apellido: 1, nombreCompleto: 1, edad: 1 } })
+        .sort({ edad: -1, updatedAt: 1 })
+        .limit(limit)
+        .toArray();
+}
+
+async function getFichaNames(limit = 50) {
+    if (!mongoFichasCollection) {
+        return [];
+    }
+
+    return mongoFichasCollection
+        .find({}, { projection: { userId: 1, nombreCompleto: 1, nombre: 1, apellido: 1 } })
+        .sort({ updatedAt: -1, createdAt: -1 })
+        .limit(limit)
+        .toArray();
 }
 
 function getUserId(msg) {
@@ -675,6 +784,41 @@ function participantMatchesUser(participant, userId) {
     return candidateIds.some(candidate => {
         return candidate === userId || normalizeWhatsAppId(candidate) === normalizedUserId;
     });
+}
+
+function getParticipantByUser(chat, userId) {
+    return getChatParticipants(chat).find(participant => participantMatchesUser(participant, userId)) || null;
+}
+
+function getPrimaryUserNumber(chat, userId) {
+    const participant = getParticipantByUser(chat, userId);
+    const candidates = [
+        participant && participant.phone,
+        participant && participant.id && participant.id.user,
+        participant && participant.id && participant.id._serialized,
+        participant && participant.lid,
+        userId
+    ].filter(Boolean);
+
+    for (const candidate of candidates) {
+        const normalized = normalizeWhatsAppId(candidate);
+        if (normalized) {
+            return normalized;
+        }
+    }
+
+    return '';
+}
+
+function getCanonicalUserId(chat, userId) {
+    const participant = getParticipantByUser(chat, userId);
+    const candidates = [
+        participant && participant.id && participant.id._serialized,
+        participant && participant.lid,
+        userId
+    ].filter(Boolean);
+
+    return candidates[0] || userId;
 }
 
 function isParticipantAdmin(participant) {
@@ -742,6 +886,15 @@ async function safeRemoveParticipants(chat, participants) {
     await runClientOperation(
         'No se pudo expulsar al usuario',
         () => chat.removeParticipants(participants),
+        { restart: true, suppressIfIgnorable: true }
+    );
+}
+
+async function safeAddParticipants(chat, participants) {
+    logChatEvent(chat, 'GROUP_JOIN', `usuarios-anadidos=${participants.join(', ')}`);
+    await runClientOperation(
+        'No se pudo anadir al usuario',
+        () => chat.addParticipants(participants),
         { restart: true, suppressIfIgnorable: true }
     );
 }
@@ -890,7 +1043,7 @@ function buildReglasClan() {
 }
 
 function formatUserMention(user) {
-    return `@${user.split('@')[0]}`;
+    return `@${normalizeWhatsAppId(user) || user.split('@')[0]}`;
 }
 
 function formatTimestamp(date) {
@@ -959,12 +1112,13 @@ async function optimizeChromiumResources(currentClient) {
 
 async function manejarEntradaLobby(notification) {
     const chat = await notification.getChat();
-    if (chat.id._serialized !== GROUP_IDS.LOBBY) {
+    if (!ALLOWED_GROUPS.includes(chat.id._serialized)) {
         return;
     }
 
-    const user = notification.recipientIds[0];
-    const number = user.split('@')[0];
+    const rawUser = notification.recipientIds[0];
+    const user = getCanonicalUserId(chat, rawUser);
+    const number = getPrimaryUserNumber(chat, rawUser);
     const lastLeave = userLeaveLog[user];
 
     userJoinLog[user] = Date.now();
@@ -973,6 +1127,20 @@ async function manejarEntradaLobby(notification) {
     logUser(user, 'JOIN');
     logChatEvent(chat, 'GROUP_JOIN', `usuario=${user}`);
     scheduleStateSave();
+
+    if (isBannedUser(user)) {
+        logChatEvent(chat, 'SEND_MESSAGE', `motivo=usuario-baneado usuario=${user}`);
+        await chat.sendMessage(`${formatUserMention(user)} baneado.`, {
+            mentions: [user]
+        });
+        await safeRemoveParticipants(chat, [user]);
+        deleteUserState(user);
+        return;
+    }
+
+    if (chat.id._serialized !== GROUP_IDS.LOBBY) {
+        return;
+    }
 
     if (!ALLOWED_PREFIXES.some(prefix => number.startsWith(prefix))) {
         logChatEvent(chat, 'SEND_MESSAGE', `motivo=numero-no-permitido usuario=${user}`);
@@ -991,19 +1159,15 @@ async function manejarEntradaLobby(notification) {
     }
 
     logChatEvent(chat, 'SEND_MESSAGE', `motivo=ficha-bienvenida usuario=${user}`);
-    await chat.sendMessage(`${buildLobbyBienvenida(user)}\n\n${buildReglasClan()}`, {
-        mentions: [user]
-    });
-    await chat.sendMessage(buildFichaBienvenida(user), {
-        mentions: [user]
-    });
+    await chat.sendMessage(`${buildLobbyBienvenida(user)}\n\n${buildReglasClan()}`);
+    await chat.sendMessage(buildFichaBienvenida(user));
 
     clearUserTimers(user);
 
     const reminderTimer = setTimeout(async () => {
         if (!usuariosFicha[user]) {
             logChatEvent(chat, 'SEND_MESSAGE', `motivo=recordatorio-ficha usuario=${user}`);
-            await chat.sendMessage(`@${number} recuerda rellenar tu ficha.`, {
+            await chat.sendMessage(`${formatUserMention(user)} recuerda rellenar tu ficha.`, {
                 mentions: [user]
             });
         }
@@ -1012,7 +1176,7 @@ async function manejarEntradaLobby(notification) {
     const kickTimer = setTimeout(async () => {
         if (!usuariosFicha[user]) {
             logChatEvent(chat, 'SEND_MESSAGE', `motivo=ficha-no-rellenada usuario=${user}`);
-            await chat.sendMessage(`@${number} no rellenaste la ficha en 24h.`, {
+            await chat.sendMessage(`${formatUserMention(user)} no rellenaste la ficha en 24h.`, {
                 mentions: [user]
             });
             await safeRemoveParticipants(chat, [user]);
@@ -1035,84 +1199,288 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
         return false;
     }
 
+    const mencionados = msg.mentionedIds || [];
+    const objetivo = mencionados[0] ? getCanonicalUserId(chat, mencionados[0]) : null;
+
     if (comando === '!help') {
         logChatEvent(chat, 'SEND_MESSAGE', `motivo=admin-help solicitado-por=${usuario}`);
         await chat.sendMessage([
             'COMANDOS ADMIN',
             '',
             '!help',
+            '!reglas',
+            '!bienvenida @usuario',
             '!ficha @usuario',
+            '!perfil @usuario',
+            '!fichas',
+            '!stats',
+            '!rank',
+            '!resetdata @usuario',
+            '!actualizardatos (respondiendo a una ficha)',
             '!expulsar @usuario',
+            '!ban @usuario',
+            '!unban @usuario',
+            '!borrar (respondiendo a un mensaje)',
             '!cerrar',
             '!abrir',
             '!aviso @usuario',
             '!quitaraviso @usuario',
             '!avisos @usuario'
-        ].join('\n'), {
-            mentions: [usuario]
-        });
+        ].join('\n'));
+        return true;
+    }
+
+    if (comando === '!reglas') {
+        logChatEvent(chat, 'SEND_MESSAGE', `motivo=reglas solicitado-por=${usuario}`);
+        await chat.sendMessage(buildReglasClan());
+        return true;
+    }
+
+    if (comando === '!bienvenida') {
+        const destinatario = objetivo || usuario;
+
+        logChatEvent(chat, 'SEND_MESSAGE', `motivo=bienvenida-manual objetivo=${destinatario} solicitado-por=${usuario}`);
+        await chat.sendMessage(`${buildLobbyBienvenida(destinatario)}\n\n${buildReglasClan()}`);
+        await chat.sendMessage(buildFichaBienvenida(destinatario));
         return true;
     }
 
     if (comando === '!ficha') {
-        const mencionados = msg.mentionedIds || [];
-        const objetivo = mencionados[0] || usuario;
+        const destinatario = objetivo || usuario;
 
-        logChatEvent(chat, 'SEND_MESSAGE', `motivo=ficha-manual objetivo=${objetivo} solicitado-por=${usuario}`);
-        await chat.sendMessage(`${buildFichaBienvenida(objetivo)}\n\nEnviada por ${formatUserMention(usuario)}`, {
-            mentions: [objetivo, usuario]
-        });
+        logChatEvent(chat, 'SEND_MESSAGE', `motivo=ficha-manual objetivo=${destinatario} solicitado-por=${usuario}`);
+        await chat.sendMessage(buildFichaBienvenida(destinatario));
+        return true;
+    }
+
+    if (comando === '!perfil') {
+        if (!objetivo) {
+            await chat.sendMessage('Debes mencionar a alguien.');
+            return true;
+        }
+
+        const ficha = await findFichaByUserId(objetivo);
+        if (!ficha) {
+            await chat.sendMessage('No hay datos guardados para ese usuario.');
+            return true;
+        }
+
+        logChatEvent(chat, 'SEND_MESSAGE', `motivo=perfil objetivo=${objetivo} solicitado-por=${usuario}`);
+        await chat.sendMessage([
+            `Perfil de ${ficha.nombreCompleto || [ficha.nombre, ficha.apellido].filter(Boolean).join(' ') || formatUserMention(ficha.userId)}`,
+            `Usuario: ${formatUserMention(ficha.userId)}`,
+            `Edad: ${ficha.edad || 'No guardada'}`,
+            `Cumpleanos: ${ficha.cumpleanos || 'No guardado'}`,
+            `Signo: ${ficha.signo || 'No guardado'}`,
+            `Actualizado: ${ficha.updatedAt ? formatTimestamp(new Date(ficha.updatedAt)) : 'Sin fecha'}`
+        ].join('\n'));
+        return true;
+    }
+
+    if (comando === '!fichas') {
+        const fichas = await getFichaNames();
+        if (!mongoFichasCollection) {
+            await chat.sendMessage('MongoDB no configurado.');
+            return true;
+        }
+
+        if (fichas.length === 0) {
+            await chat.sendMessage('No hay fichas guardadas.');
+            return true;
+        }
+
+        logChatEvent(chat, 'SEND_MESSAGE', `motivo=fichas solicitado-por=${usuario}`);
+        await chat.sendMessage([
+            'FICHAS GUARDADAS',
+            ...fichas.map((ficha, index) => `${index + 1}. ${ficha.nombreCompleto || [ficha.nombre, ficha.apellido].filter(Boolean).join(' ') || formatUserMention(ficha.userId)}`)
+        ].join('\n'));
+        return true;
+    }
+
+    if (comando === '!stats') {
+        const stats = await getFichasStats();
+        if (!stats) {
+            await chat.sendMessage('MongoDB no configurado.');
+            return true;
+        }
+
+        logChatEvent(chat, 'SEND_MESSAGE', `motivo=stats solicitado-por=${usuario}`);
+        await chat.sendMessage([
+            'STATS FICHAS',
+            `Total: ${stats.total}`,
+            `Elite: ${stats.elite}`,
+            `Rookie: ${stats.rookie}`,
+            `Edad media: ${stats.mediaEdad}`
+        ].join('\n'));
+        return true;
+    }
+
+    if (comando === '!rank') {
+        const ranking = await getFichasRank();
+        if (!mongoFichasCollection) {
+            await chat.sendMessage('MongoDB no configurado.');
+            return true;
+        }
+
+        if (ranking.length === 0) {
+            await chat.sendMessage('No hay datos suficientes para el rank.');
+            return true;
+        }
+
+        logChatEvent(chat, 'SEND_MESSAGE', `motivo=rank solicitado-por=${usuario}`);
+        await chat.sendMessage([
+            'RANK EDAD',
+            ...ranking.map((ficha, index) => `${index + 1}. ${ficha.nombreCompleto || [ficha.nombre, ficha.apellido].filter(Boolean).join(' ') || formatUserMention(ficha.userId)} - ${ficha.edad}`)
+        ].join('\n'));
+        return true;
+    }
+
+    if (comando === '!resetdata') {
+        if (!objetivo) {
+            await chat.sendMessage('Debes mencionar a alguien.');
+            return true;
+        }
+
+        logChatEvent(chat, 'SEND_MESSAGE', `motivo=resetdata objetivo=${objetivo} solicitado-por=${usuario}`);
+        await chat.sendMessage('Eliminando datos...');
+        const deleted = await deleteFichaByUserId(objetivo);
+        if (deleted > 0) {
+            await chat.sendMessage('Datos eliminados.');
+        } else {
+            await chat.sendMessage('No habia datos guardados para ese usuario.');
+        }
+        return true;
+    }
+
+    if (comando === '!actualizardatos') {
+        if (!mongoFichasCollection) {
+            await chat.sendMessage('MongoDB no configurado.');
+            return true;
+        }
+
+        if (!msg.hasQuotedMsg) {
+            await chat.sendMessage('Usa !actualizardatos respondiendo a una ficha.');
+            return true;
+        }
+
+        const quotedMessage = await msg.getQuotedMessage();
+        if (!quotedMessage) {
+            await chat.sendMessage('No se pudo encontrar el mensaje citado.');
+            return true;
+        }
+
+        const quotedText = (quotedMessage.body || '').toLowerCase().trim();
+        if (!isFicha(quotedText)) {
+            await chat.sendMessage('El mensaje citado no parece una ficha.');
+            return true;
+        }
+
+        const quotedUser = objetivo || getUserId(quotedMessage);
+        const fichaData = parseFichaData(quotedText, quotedUser);
+
+        logChatEvent(chat, 'SEND_MESSAGE', `motivo=actualizardatos objetivo=${quotedUser} solicitado-por=${usuario}`);
+        await chat.sendMessage('Actualizando datos...');
+
+        try {
+            await saveFichaData(fichaData);
+            await chat.sendMessage(`Datos actualizados para ${formatUserMention(quotedUser)}.`, {
+                mentions: [quotedUser]
+            });
+        } catch (error) {
+            console.error('No se pudo actualizar la ficha en MongoDB:', getErrorMessage(error));
+            await chat.sendMessage('No se pudieron actualizar los datos.');
+        }
         return true;
     }
 
     if (comando === '!expulsar') {
-        const mencionados = msg.mentionedIds || [];
         if (mencionados.length === 0) {
             logChatEvent(chat, 'SEND_MESSAGE', `motivo=expulsar-sin-mencion solicitado-por=${usuario}`);
-            await chat.sendMessage(`Debes mencionar a alguien, ${formatUserMention(usuario)}.`, {
-                mentions: [usuario]
-            });
+            await chat.sendMessage('Debes mencionar a alguien.');
             return true;
         }
 
         await safeRemoveParticipants(chat, mencionados);
-        mencionados.forEach(deleteUserState);
+        mencionados
+            .map(mencionado => getCanonicalUserId(chat, mencionado))
+            .forEach(deleteUserState);
         logChatEvent(chat, 'SEND_MESSAGE', `motivo=usuario-expulsado solicitado-por=${usuario}`);
-        await chat.sendMessage(`${formatUserMention(mencionados[0])} expulsado por ${formatUserMention(usuario)}.`, {
-            mentions: [mencionados[0], usuario]
+        await chat.sendMessage(`${formatUserMention(mencionados[0])} expulsado.`, {
+            mentions: [mencionados[0]]
         });
+        return true;
+    }
+
+    if (comando === '!ban') {
+        if (!objetivo) {
+            await chat.sendMessage('Debes mencionar a alguien.');
+            return true;
+        }
+
+        bannedUsers[objetivo] = true;
+        scheduleStateSave();
+        await safeRemoveParticipants(chat, [objetivo]);
+        deleteUserState(objetivo);
+        logChatEvent(chat, 'SEND_MESSAGE', `motivo=ban objetivo=${objetivo} solicitado-por=${usuario}`);
+        await chat.sendMessage(`${formatUserMention(objetivo)} baneado.`, {
+            mentions: [objetivo]
+        });
+        return true;
+    }
+
+    if (comando === '!unban') {
+        if (!objetivo) {
+            await chat.sendMessage('Debes mencionar a alguien.');
+            return true;
+        }
+
+        delete bannedUsers[objetivo];
+        scheduleStateSave();
+        logChatEvent(chat, 'SEND_MESSAGE', `motivo=unban objetivo=${objetivo} solicitado-por=${usuario}`);
+        await chat.sendMessage(`Ban quitado a ${formatUserMention(objetivo)}.`);
+        return true;
+    }
+
+    if (comando === '!borrar') {
+        if (!msg.hasQuotedMsg) {
+            await chat.sendMessage('Usa !borrar respondiendo al mensaje que quieras eliminar.');
+            return true;
+        }
+
+        const quotedMessage = await msg.getQuotedMessage();
+        if (!quotedMessage) {
+            await chat.sendMessage('No se pudo encontrar el mensaje citado.');
+            return true;
+        }
+
+        await safeDeleteMessage(quotedMessage);
+        await safeDeleteMessage(msg);
+        logChatEvent(chat, 'SEND_MESSAGE', `motivo=borrar solicitado-por=${usuario}`);
         return true;
     }
 
     if (comando === '!cerrar') {
         await safeSetAdminsOnly(chat, true);
         logChatEvent(chat, 'SEND_MESSAGE', `motivo=grupo-cerrado solicitado-por=${usuario}`);
-        await chat.sendMessage(`Grupo cerrado por ${formatUserMention(usuario)}.`, {
-            mentions: [usuario]
-        });
+        await chat.sendMessage('Grupo cerrado.');
         return true;
     }
 
     if (comando === '!abrir') {
         await safeSetAdminsOnly(chat, false);
         logChatEvent(chat, 'SEND_MESSAGE', `motivo=grupo-abierto solicitado-por=${usuario}`);
-        await chat.sendMessage(`Grupo abierto por ${formatUserMention(usuario)}.`, {
-            mentions: [usuario]
-        });
+        await chat.sendMessage('Grupo abierto.');
         return true;
     }
 
     if (comando === '!aviso') {
-        const mencionados = msg.mentionedIds || [];
         if (mencionados.length === 0) {
             logChatEvent(chat, 'SEND_MESSAGE', `motivo=aviso-sin-mencion solicitado-por=${usuario}`);
-            await chat.sendMessage(`Debes mencionar a alguien, ${formatUserMention(usuario)}.`, {
-                mentions: [usuario]
-            });
+            await chat.sendMessage('Debes mencionar a alguien.');
             return true;
         }
 
-        const objetivo = mencionados[0];
+        const objetivo = getCanonicalUserId(chat, mencionados[0]);
         avisos[objetivo] = (avisos[objetivo] || 0) + 1;
         userJoinLog[objetivo] = Date.now();
         scheduleStateSave();
@@ -1135,44 +1503,38 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
     }
 
     if (comando === '!quitaraviso') {
-        const mencionados = msg.mentionedIds || [];
         if (mencionados.length === 0) {
             logChatEvent(chat, 'SEND_MESSAGE', `motivo=quitaraviso-sin-mencion solicitado-por=${usuario}`);
-            await chat.sendMessage(`Debes mencionar a alguien, ${formatUserMention(usuario)}.`, {
-                mentions: [usuario]
-            });
+            await chat.sendMessage('Debes mencionar a alguien.');
             return true;
         }
 
-        const objetivo = mencionados[0];
+        const objetivo = getCanonicalUserId(chat, mencionados[0]);
         avisos[objetivo] = 0;
         userJoinLog[objetivo] = Date.now();
         scheduleStateSave();
 
         logChatEvent(chat, 'SEND_MESSAGE', `motivo=avisos-reiniciados objetivo=${objetivo} solicitado-por=${usuario}`);
-        await chat.sendMessage(`Avisos reiniciados para ${formatUserMention(objetivo)} por ${formatUserMention(usuario)}.`, {
-            mentions: [objetivo, usuario]
+        await chat.sendMessage(`Avisos reiniciados para ${formatUserMention(objetivo)}.`, {
+            mentions: [objetivo]
         });
         return true;
     }
 
     if (comando === '!avisos') {
-        const mencionados = msg.mentionedIds || [];
         if (mencionados.length === 0) {
             logChatEvent(chat, 'SEND_MESSAGE', `motivo=avisos-sin-mencion solicitado-por=${usuario}`);
-            await chat.sendMessage(`Debes mencionar a alguien, ${formatUserMention(usuario)}.`, {
-                mentions: [usuario]
-            });
+            await chat.sendMessage('Debes mencionar a alguien.');
             return true;
         }
 
-        const objetivo = mencionados[0];
+        const objetivo = getCanonicalUserId(chat, mencionados[0]);
         const cantidad = avisos[objetivo] || 0;
 
         logChatEvent(chat, 'SEND_MESSAGE', `motivo=consultar-avisos objetivo=${objetivo} solicitado-por=${usuario}`);
         await chat.sendMessage(
-            `${formatUserMention(objetivo)} tiene ${cantidad} avisos. Consultado por ${formatUserMention(usuario)}.`,
-            { mentions: [objetivo, usuario] }
+            `${formatUserMention(objetivo)} tiene ${cantidad} avisos.`,
+            { mentions: [objetivo] }
         );
         return true;
     }
@@ -1181,7 +1543,7 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
 }
 
 async function manejarModeracionLobby(msg, chat, text, user) {
-    if (chat.id._serialized !== GROUP_IDS.LOBBY) {
+    if (!ALLOWED_GROUPS.includes(chat.id._serialized)) {
         return false;
     }
 
@@ -1222,7 +1584,7 @@ async function manejarModeracionLobby(msg, chat, text, user) {
         return true;
     }
 
-    if (INSULTS.some(insulto => text.includes(insulto))) {
+    if (containsInsult(text)) {
         const warningCount = addWarning(user);
 
         if (warningCount === 1) {
@@ -1272,10 +1634,12 @@ async function manejarFichaLobby(msg, chat, text, user) {
 
     try {
         const archive = await client.getChatById(GROUP_IDS.ARCHIVE);
+        await safeAddParticipants(archive, [user]);
+        logChatEvent(archive, 'GROUP_JOIN', `usuario-anadido=${user}`);
         logChatEvent(archive, 'FORWARD_FICHA', `usuario=${user}`);
         await msg.forward(archive);
     } catch (error) {
-        console.error('No se pudo reenviar la ficha al archivo:', error.message);
+        console.error('No se pudo anadir o reenviar la ficha al archivo:', error.message);
     }
 
     try {
@@ -1296,13 +1660,11 @@ async function manejarFichaLobby(msg, chat, text, user) {
 
     try {
         const grupoDestino = await client.getChatById(destinoId);
-        await grupoDestino.addParticipants([user]);
+        await safeAddParticipants(grupoDestino, [user]);
         logChatEvent(grupoDestino, 'GROUP_JOIN', `usuario-anadido=${user}`);
 
         logChatEvent(grupoDestino, 'SEND_MESSAGE', `motivo=bienvenida-destino usuario=${user}`);
-        await grupoDestino.sendMessage(buildDestinoBienvenida(user), {
-            mentions: [user]
-        });
+        await grupoDestino.sendMessage(buildDestinoBienvenida(user));
 
         logChatEvent(chat, 'SEND_MESSAGE', `motivo=ficha-completada usuario=${user} destino=${grupoNombre}`);
         await chat.sendMessage([
