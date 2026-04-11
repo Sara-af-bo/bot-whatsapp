@@ -3,7 +3,7 @@ const { Client, LocalAuth } = require('whatsapp-web.js');
 const QRCode = require('qrcode');
 
 const GROUP_IDS = {
-    LOBBY: '120363408940060754@g.us',
+    LOBBY: '120363425370751798@g.us',
     ROOKIE: '120363426241635796@g.us',
     ELITE: '120363426931376573@g.us',
     ARCHIVE: '120363425009767808@g.us'
