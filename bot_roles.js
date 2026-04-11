@@ -3,6 +3,7 @@ const { Client, LocalAuth } = require('whatsapp-web.js');
 const LOBBY_ID = "120363408940060754@g.us";
 const ROOKIE_ID = "120363426241635796@g.us";
 const ELITE_ID = "120363426931376573@g.us";
+const ARCHIVE_ID = "120363425009767808@g.us";
 
 const client = new Client({
     authStrategy: new LocalAuth(),
@@ -24,10 +25,14 @@ client.on('message', async (msg) => {
     const chat = await msg.getChat();
     if (!chat.isGroup || chat.id._serialized !== LOBBY_ID) return;
 
-    const user = msg.author || msg.from;
-    const texto = msg.body.toLowerCase();
+   const user = msg.author || msg.from;
+const texto = msg.body.toLowerCase();
 
-    if (texto.includes("nombre") && texto.includes("edad")) {
+if (texto.includes("nombre") && texto.includes("edad")) {
+
+    // 🔥 REENVIAR SOLO FICHA
+    const archive = await client.getChatById(ARCHIVE_ID);
+    await msg.forward(archive);
 
         const edad = extraerEdad(texto);
 
