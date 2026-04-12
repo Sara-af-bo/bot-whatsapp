@@ -300,6 +300,7 @@ let isChromiumConnected = false;
 let hasAuthenticated = false;
 let hasReady = false;
 let healthTimeoutCount = 0;
+let remoteBackupInFlight = null;
 let mongoClient = null;
 let mongoDb = null;
 let mongoStateCollection = null;
@@ -552,6 +553,12 @@ async function connectMongo() {
             // pero sessionExists/extract usan "session" como nombre. Normalizamos.
             mongoStore = new FixedMongoStore({ mongoose });
             console.log('CONNECT MONGO DEBUG -> FixedMongoStore listo (sesiones WhatsApp).');
+            try {
+                const exists = await mongoStore.sessionExists({ session: `RemoteAuth-${SESSION_CLIENT_ID}` });
+                console.log('CONNECT MONGO DEBUG -> RemoteAuth sessionExists:', Boolean(exists));
+            } catch (error) {
+                console.warn('CONNECT MONGO WARN -> No se pudo comprobar sessionExists:', getErrorMessage(error));
+            }
         } else {
             mongoStore = null;
         }
@@ -684,6 +691,60 @@ function getErrorMessage(error) {
     }
 
     return String(error);
+}
+
+function withTimeout(promise, timeoutMs, label) {
+    if (!promise || typeof promise.then !== 'function') {
+        return Promise.resolve(promise);
+    }
+
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            const err = new Error(`${label || 'operation'} timeout after ${timeoutMs}ms`);
+            err.code = 'TIMEOUT';
+            reject(err);
+        }, timeoutMs);
+
+        promise
+            .then(value => resolve(value))
+            .catch(err => reject(err))
+            .finally(() => clearTimeout(timer));
+    });
+}
+
+async function forceRemoteBackup(context) {
+    if (!client || !client.authStrategy) {
+        return false;
+    }
+
+    const authStrategy = client.authStrategy;
+    if (typeof authStrategy.storeRemoteSession !== 'function') {
+        return false;
+    }
+
+    if (remoteBackupInFlight) {
+        try {
+            await remoteBackupInFlight;
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    remoteBackupInFlight = (async () => {
+        try {
+            console.warn(`REMOTEAUTH -> backup inmediato solicitado (${context})`);
+            await withTimeout(authStrategy.storeRemoteSession({ emit: true }), 20000, 'remote backup');
+            return true;
+        } catch (error) {
+            console.warn(`REMOTEAUTH WARN -> backup inmediato falló (${context}): ${getErrorMessage(error)}`);
+            return false;
+        } finally {
+            remoteBackupInFlight = null;
+        }
+    })();
+
+    return remoteBackupInFlight;
 }
 
 function isHealthcheckTimeoutError(error) {
@@ -2264,6 +2325,7 @@ async function restartClient(reason) {
     logMemory('before-restart');
 
     try {
+        await forceRemoteBackup(`restart:${reason}`);
         await destroyCurrentClient();
         badStateCount = 0;
 
