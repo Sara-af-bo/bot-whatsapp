@@ -96,11 +96,46 @@ function resolveAuthStrategy() {
 }
 
 const AUTH_STRATEGY = resolveAuthStrategy();
+const parsedInitialRemoteSaveDelayMs = Number(process.env.REMOTE_INITIAL_SAVE_DELAY_MS);
+const REMOTE_INITIAL_SAVE_DELAY_MS = Math.max(
+    5000,
+    Number.isFinite(parsedInitialRemoteSaveDelayMs) ? parsedInitialRemoteSaveDelayMs : 15000
+);
 const parsedRemoteBackupSyncMs = Number(process.env.REMOTE_BACKUP_SYNC_INTERVAL_MS);
 const REMOTE_BACKUP_SYNC_INTERVAL_MS = Math.max(
     60 * 1000,
     Number.isFinite(parsedRemoteBackupSyncMs) ? parsedRemoteBackupSyncMs : 60 * 1000
 );
+
+class RemoteAuthFastSave extends RemoteAuth {
+    async afterAuthReady() {
+        const sessionExists = await this.store.sessionExists({ session: this.sessionName });
+        if (!sessionExists) {
+            // En RemoteAuth upstream, el primer guardado espera 60s. Si Chromium crashea antes,
+            // pierdes la sesión y vuelve a pedir QR. Guardamos antes (best-effort) y reintentamos.
+            const delays = [
+                REMOTE_INITIAL_SAVE_DELAY_MS,
+                30000,
+                60000
+            ];
+
+            for (const delayMs of delays) {
+                await this.delay(delayMs);
+                try {
+                    await this.storeRemoteSession({ emit: true });
+                    break;
+                } catch (error) {
+                    console.error('REMOTEAUTH WARN -> No se pudo guardar sesión remota aún:', getErrorMessage(error));
+                }
+            }
+        }
+
+        const self = this;
+        this.backupSync = setInterval(async function () {
+            await self.storeRemoteSession();
+        }, this.backupSyncIntervalMs);
+    }
+}
 const DEFAULT_PUPPETEER_ARGS = [
     '--no-sandbox',
     '--disable-setuid-sandbox',
@@ -131,6 +166,8 @@ console.log('ENV DEBUG -> SESSION_CLIENT_ID:', SESSION_CLIENT_ID);
 console.log('ENV DEBUG -> AUTH_STRATEGY_RAW:', AUTH_STRATEGY_RAW);
 console.log('ENV DEBUG -> ALLOW_NOAUTH:', ALLOW_NOAUTH);
 console.log('ENV DEBUG -> AUTH_STRATEGY_EFFECTIVE:', AUTH_STRATEGY);
+console.log('ENV DEBUG -> REMOTE_INITIAL_SAVE_DELAY_MS:', REMOTE_INITIAL_SAVE_DELAY_MS);
+console.log('ENV DEBUG -> REMOTE_BACKUP_SYNC_INTERVAL_MS:', REMOTE_BACKUP_SYNC_INTERVAL_MS);
 
 const STATE_SAVE_DEBOUNCE_MS = 1000;
 const TRACKED_GROUP_IDS = Object.values(GROUP_IDS);
@@ -217,7 +254,7 @@ function createClient() {
 
     if (AUTH_STRATEGY === 'remoteauth') {
         if (mongoStore) {
-            authStrategy = new RemoteAuth({
+            authStrategy = new RemoteAuthFastSave({
                 clientId: SESSION_CLIENT_ID,
                 store: mongoStore,
                 backupSyncIntervalMs: REMOTE_BACKUP_SYNC_INTERVAL_MS
