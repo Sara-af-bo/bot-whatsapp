@@ -537,8 +537,24 @@ function monitorChromiumPage(page, label) {
     monitoredChromiumPages.add(page);
 
     page.on('error', error => {
+        const isCritical =
+            (client && client.pupPage && page === client.pupPage) ||
+            (() => {
+                try {
+                    const url = typeof page.url === 'function' ? page.url() : '';
+                    return typeof url === 'string' && url.includes('web.whatsapp.com');
+                } catch {
+                    return false;
+                }
+            })();
+
+        console.error(`Chromium page error (${label}) critical=${isCritical}: ${getErrorMessage(error)}`);
+
+        if (!isCritical) {
+            return;
+        }
+
         isChromiumConnected = false;
-        console.error(`Chromium page error (${label}): ${getErrorMessage(error)}`);
         restartClient(`page error ${label}`).catch(restartError => {
             console.error('No se pudo reiniciar tras page error:', getErrorMessage(restartError));
         });
@@ -549,8 +565,24 @@ function monitorChromiumPage(page, label) {
     });
 
     page.on('close', () => {
+        const isCritical =
+            (client && client.pupPage && page === client.pupPage) ||
+            (() => {
+                try {
+                    const url = typeof page.url === 'function' ? page.url() : '';
+                    return typeof url === 'string' && url.includes('web.whatsapp.com');
+                } catch {
+                    return false;
+                }
+            })();
+
+        console.error(`Chromium page cerrada (${label}) critical=${isCritical}.`);
+
+        if (!isCritical) {
+            return;
+        }
+
         isChromiumConnected = false;
-        console.error(`Chromium page cerrada (${label}).`);
         restartClient(`page closed ${label}`).catch(restartError => {
             console.error('No se pudo reiniciar tras cierre de pagina:', getErrorMessage(restartError));
         });
