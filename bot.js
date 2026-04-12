@@ -12,9 +12,30 @@ if (global.gc) {
 const v8 = require('v8');
 v8.setFlagsFromString('--max-old-space-size=256');
 
+let mongoose = null;
+let MongoStore = null;
+try {
+    mongoose = require('mongoose');
+    const wwebJsMongo = require('wwebjs-mongo');
+    MongoStore = wwebJsMongo.MongoStore;
+} catch (error) {
+    console.warn('MongoDB session store no disponible (mongoose/wwebjs-mongo). Continuo sin persistencia de sesion.');
+}
+
+console.log('DEPENDENCIES DEBUG -> mongoose loaded:', Boolean(mongoose), 'MongoStore loaded:', Boolean(MongoStore));
+
 const wwebjs = require('whatsapp-web.js');
 const Client = wwebjs.Client;
-const NoAuth = wwebjs.NoAuth;
+const LocalAuth = wwebjs.LocalAuth;
+const RemoteAuth = wwebjs.RemoteAuth;
+let NoAuth = wwebjs.NoAuth;
+if (!NoAuth) {
+    try {
+        NoAuth = require('whatsapp-web.js/src/authStrategies/NoAuth');
+    } catch {
+        NoAuth = null;
+    }
+}
 const QRCode = require('qrcode');
 
 const GROUP_IDS = {
@@ -55,11 +76,18 @@ const MAX_HEAP_MB = Number(process.env.MAX_HEAP_MB || 220);
 const MONGODB_URI = process.env.MONGODB_URI;
 const MONGODB_DB = process.env.MONGODB_DB || 'draxorix_bot';
 const SESSION_CLIENT_ID = process.env.SESSION_CLIENT_ID || 'draxorix-bot-clean-session';
+const AUTH_STRATEGY = String(process.env.AUTH_STRATEGY || 'noauth').toLowerCase().trim();
+const parsedRemoteBackupSyncMs = Number(process.env.REMOTE_BACKUP_SYNC_INTERVAL_MS);
+const REMOTE_BACKUP_SYNC_INTERVAL_MS = Math.max(
+    60 * 1000,
+    Number.isFinite(parsedRemoteBackupSyncMs) ? parsedRemoteBackupSyncMs : 60 * 1000
+);
 
 console.log('ENV DEBUG -> MONGODB_URI set:', Boolean(MONGODB_URI));
 console.log('ENV DEBUG -> MONGODB_URI value (first 30 chars):', MONGODB_URI ? MONGODB_URI.substring(0, 30) + '...' : 'NOT SET');
 console.log('ENV DEBUG -> MONGODB_DB:', MONGODB_DB);
 console.log('ENV DEBUG -> SESSION_CLIENT_ID:', SESSION_CLIENT_ID);
+console.log('ENV DEBUG -> AUTH_STRATEGY:', AUTH_STRATEGY);
 
 const STATE_SAVE_DEBOUNCE_MS = 1000;
 const TRACKED_GROUP_IDS = Object.values(GROUP_IDS);
@@ -102,10 +130,12 @@ let mongoDb = null;
 let mongoStateCollection = null;
 let mongoEventsCollection = null;
 let mongoFichasCollection = null;
+let mongoStore = null;
 let pendingStateSaveTimeout = null;
 let stateSaveInFlight = null;
 const processedMessageIds = new Map();
 const monitoredChromiumPages = new WeakSet();
+let qrGenerationCount = 0;
 
 const app = express();
 
@@ -137,12 +167,35 @@ app.listen(WEB_PORT, '0.0.0.0', () => {
 
 function createClient() {
     console.log('SESSION DEBUG -> createClient() -> creando cliente de WhatsApp');
-    console.log('SESSION DEBUG -> Using auth strategy: NoAuth (sin persistencia)');
+    console.log('SESSION DEBUG -> mongoStore available:', Boolean(mongoStore));
+
+    let authStrategy = null;
+    let authLabel = 'none';
+
+    if (AUTH_STRATEGY === 'remoteauth' && mongoStore) {
+        authStrategy = new RemoteAuth({
+            clientId: SESSION_CLIENT_ID,
+            store: mongoStore,
+            backupSyncIntervalMs: REMOTE_BACKUP_SYNC_INTERVAL_MS
+        });
+        authLabel = 'RemoteAuth';
+    } else if (AUTH_STRATEGY === 'localauth') {
+        authStrategy = new LocalAuth({ clientId: SESSION_CLIENT_ID });
+        authLabel = 'LocalAuth';
+    } else if (AUTH_STRATEGY === 'noauth') {
+        authStrategy = NoAuth ? new NoAuth() : null;
+        authLabel = NoAuth ? 'NoAuth' : 'NoAuth(unavailable)';
+    } else {
+        // fallback seguro
+        authStrategy = NoAuth ? new NoAuth() : new LocalAuth({ clientId: SESSION_CLIENT_ID });
+        authLabel = NoAuth ? 'NoAuth(fallback)' : 'LocalAuth(fallback)';
+    }
+
+    console.log('SESSION DEBUG -> Using auth strategy:', authLabel);
     console.log('SESSION DEBUG -> clientId:', SESSION_CLIENT_ID);
 
     return new Client({
-        // Sin guardado/recuperacion de sesion: requiere QR en cada arranque.
-        authStrategy: NoAuth ? new NoAuth() : undefined,
+        authStrategy: authStrategy || undefined,
         restartOnAuthFail: true,
         takeoverOnConflict: true,
         takeoverTimeoutMs: 0,
@@ -283,6 +336,15 @@ async function connectMongo() {
     console.log('CONNECT MONGO DEBUG -> Attempting to connect to MongoDB...');
     try {
         console.log('MongoDB connect -> trying to connect with configured URI');
+
+        if (AUTH_STRATEGY === 'remoteauth' && mongoose && MongoStore) {
+            await mongoose.connect(MONGODB_URI, { dbName: MONGODB_DB });
+            mongoStore = new MongoStore({ mongoose });
+            console.log('CONNECT MONGO DEBUG -> MongoStore listo (sesiones WhatsApp).');
+        } else {
+            mongoStore = null;
+        }
+
         mongoClient = new MongoClient(MONGODB_URI);
         await mongoClient.connect();
         mongoDb = mongoClient.db(MONGODB_DB);
@@ -300,6 +362,7 @@ async function connectMongo() {
         console.error('Error name:', error.name);
         console.error('Error code:', error.code);
         console.error('Full error:', error);
+        mongoStore = null;
         mongoClient = null;
         mongoDb = null;
         mongoStateCollection = null;
@@ -1991,7 +2054,13 @@ function bindClientEvents(currentClient) {
     currentClient.on('qr', async qr => {
         touchHealth();
         isChromiumConnected = true;
-        console.log('SESSION DEBUG -> GENERANDO QR (sesion no recuperada o requiere re-login)');
+        console.log('SESSION DEBUG -> QR recibido');
+        qrGenerationCount += 1;
+        insertEventLog({
+            type: 'auth_qr',
+            attempt: qrGenerationCount,
+            clientId: SESSION_CLIENT_ID
+        });
 
         try {
             latestQR = await QRCode.toDataURL(qr, {
@@ -2019,7 +2088,7 @@ function bindClientEvents(currentClient) {
         touchHealth();
         isChromiumConnected = true;
         latestQR = null;
-        console.log('SESSION DEBUG -> Bot listo - sesion deberia estar guardada');
+        console.log('SESSION DEBUG -> Bot listo');
         await optimizeChromiumResources(currentClient);
     });
 
@@ -2027,6 +2096,15 @@ function bindClientEvents(currentClient) {
         touchHealth();
         isChromiumConnected = true;
         console.log('SESSION DEBUG -> Sesion autenticada');
+    });
+
+    currentClient.on('remote_session_saved', () => {
+        touchHealth();
+        console.log('SESSION DEBUG -> Sesion guardada en MongoDB (remote_session_saved)');
+        insertEventLog({
+            type: 'remote_session_saved',
+            clientId: SESSION_CLIENT_ID
+        });
     });
 
     currentClient.on('auth_failure', message => {
@@ -2137,6 +2215,7 @@ function bindClientEvents(currentClient) {
 
 async function startClient() {
     console.log('startClient() -> iniciando cliente');
+
     const newClient = createClient();
     client = newClient;
     isChromiumConnected = false;
@@ -2174,6 +2253,10 @@ async function shutdownPersistence() {
     if (mongoClient) {
         await mongoClient.close();
         mongoClient = null;
+    }
+
+    if (mongoose && mongoose.connection && mongoose.connection.readyState !== 0) {
+        await mongoose.disconnect();
     }
 }
 
