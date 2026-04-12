@@ -138,8 +138,8 @@ app.listen(WEB_PORT, '0.0.0.0', () => {
 });
 
 function createClient() {
-    console.log('createClient() -> creando cliente de WhatsApp');
-    console.log('CREATE CLIENT DEBUG -> mongoStore available:', Boolean(mongoStore));
+    console.log('SESSION DEBUG -> createClient() -> creando cliente de WhatsApp');
+    console.log('SESSION DEBUG -> mongoStore available:', Boolean(mongoStore));
 
     const authStrategy = mongoStore
         ? new RemoteAuth({
@@ -149,7 +149,10 @@ function createClient() {
         })
         : new LocalAuth({ clientId: SESSION_CLIENT_ID });
 
-    console.log('CREATE CLIENT DEBUG -> Using auth strategy:', mongoStore ? 'RemoteAuth' : 'LocalAuth');
+    console.log('SESSION DEBUG -> Using auth strategy:', mongoStore ? 'RemoteAuth' : 'LocalAuth');
+    console.log('SESSION DEBUG -> clientId:', SESSION_CLIENT_ID);
+
+    return new Client({
 
     return new Client({
         authStrategy,
@@ -291,6 +294,18 @@ async function connectMongo() {
         mongoStore = new MongoStore({ mongoose });
         
         console.log('CONNECT MONGO DEBUG -> MongoStore created successfully');
+        
+        // Verificar si hay sesiones guardadas
+        try {
+            const sessions = await mongoStore.collection.find({}).toArray();
+            console.log('SESSION DEBUG -> Sessions guardadas en MongoDB:', sessions.length);
+            if (sessions.length > 0) {
+                console.log('SESSION DEBUG -> Primera sesion ID:', sessions[0]._id);
+            }
+        } catch (error) {
+            console.log('SESSION DEBUG -> Error checking sessions:', error.message);
+        }
+        
         mongoClient = new MongoClient(MONGODB_URI);
         await mongoClient.connect();
         mongoDb = mongoClient.db(MONGODB_DB);
@@ -1976,7 +1991,7 @@ function bindClientEvents(currentClient) {
     currentClient.on('qr', async qr => {
         touchHealth();
         isChromiumConnected = true;
-        console.log('GENERANDO QR');
+        console.log('SESSION DEBUG -> GENERANDO QR - Esto significa que NO se recupero sesion de MongoDB');
 
         try {
             latestQR = await QRCode.toDataURL(qr, {
@@ -2004,14 +2019,14 @@ function bindClientEvents(currentClient) {
         touchHealth();
         isChromiumConnected = true;
         latestQR = null;
-        console.log('Bot unificado activo.');
+        console.log('SESSION DEBUG -> Bot listo - sesion deberia estar guardada');
         await optimizeChromiumResources(currentClient);
     });
 
     currentClient.on('authenticated', () => {
         touchHealth();
         isChromiumConnected = true;
-        console.log('Sesion autenticada.');
+        console.log('SESSION DEBUG -> Sesion autenticada - guardando en MongoDB');
     });
 
     currentClient.on('auth_failure', message => {
