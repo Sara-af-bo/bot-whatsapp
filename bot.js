@@ -1,6 +1,7 @@
 const express = require('express');
 const { MongoClient } = require('mongodb');
 const path = require('path');
+const fs = require('fs');
 
 // Memory optimization for Railway
 if (global.gc) {
@@ -182,6 +183,10 @@ function resolveAuthStrategy() {
 }
 
 const AUTH_STRATEGY = resolveAuthStrategy();
+const REMOTE_AUTH_PATH = process.env.REMOTE_AUTH_PATH
+    || (process.platform === 'linux'
+        ? '/tmp/.wwebjs_auth'
+        : path.join(process.cwd(), '.wwebjs_auth'));
 const parsedInitialRemoteSaveDelayMs = Number(process.env.REMOTE_INITIAL_SAVE_DELAY_MS);
 const REMOTE_INITIAL_SAVE_DELAY_MS = Math.max(
     5000,
@@ -252,6 +257,7 @@ console.log('ENV DEBUG -> SESSION_CLIENT_ID:', SESSION_CLIENT_ID);
 console.log('ENV DEBUG -> AUTH_STRATEGY_RAW:', AUTH_STRATEGY_RAW);
 console.log('ENV DEBUG -> ALLOW_NOAUTH:', ALLOW_NOAUTH);
 console.log('ENV DEBUG -> AUTH_STRATEGY_EFFECTIVE:', AUTH_STRATEGY);
+console.log('ENV DEBUG -> REMOTE_AUTH_PATH:', REMOTE_AUTH_PATH);
 console.log('ENV DEBUG -> REMOTE_INITIAL_SAVE_DELAY_MS:', REMOTE_INITIAL_SAVE_DELAY_MS);
 console.log('ENV DEBUG -> REMOTE_BACKUP_SYNC_INTERVAL_MS:', REMOTE_BACKUP_SYNC_INTERVAL_MS);
 
@@ -340,9 +346,16 @@ function createClient() {
 
     if (AUTH_STRATEGY === 'remoteauth') {
         if (mongoStore) {
+            try {
+                fs.mkdirSync(REMOTE_AUTH_PATH, { recursive: true });
+            } catch (error) {
+                console.error('SESSION WARN -> No se pudo crear REMOTE_AUTH_PATH:', getErrorMessage(error));
+            }
+
             authStrategy = new RemoteAuthFastSave({
                 clientId: SESSION_CLIENT_ID,
                 store: mongoStore,
+                dataPath: REMOTE_AUTH_PATH,
                 backupSyncIntervalMs: REMOTE_BACKUP_SYNC_INTERVAL_MS
             });
             authLabel = 'RemoteAuth';
