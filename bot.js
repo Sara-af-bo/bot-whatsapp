@@ -78,7 +78,6 @@ class FixedMongoStore {
             .on('error', reject)
             .on('close', resolve);
     });
-}
         const documents = await bucket.find({ filename }).toArray();
         if (documents.length > 1) {
             const oldest = documents.reduce((a, b) => (a.uploadDate < b.uploadDate ? a : b));
