@@ -153,8 +153,6 @@ function createClient() {
     console.log('SESSION DEBUG -> clientId:', SESSION_CLIENT_ID);
 
     return new Client({
-
-    return new Client({
         authStrategy,
         restartOnAuthFail: true,
         takeoverOnConflict: true,
