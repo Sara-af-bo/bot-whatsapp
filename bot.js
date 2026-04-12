@@ -6,8 +6,9 @@ let MongoStore = null;
 try {
     mongoose = require('mongoose');
     const wwebJsMongo = require('wwebjs-mongo');
-    MongoStore = wwebJsMongo.StoreFactory || wwebJsMongo;
+    MongoStore = wwebJsMongo.MongoStore;
     console.log('IMPORT DEBUG -> wwebjs-mongo module:', Object.keys(wwebJsMongo || {}));
+    console.log('IMPORT DEBUG -> MongoStore extracted:', typeof MongoStore);
 } catch (error) {
     console.warn('MongoDB dependencies not available. Running without persistence.');
 }
