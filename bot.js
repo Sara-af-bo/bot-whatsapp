@@ -12,21 +12,9 @@ if (global.gc) {
 const v8 = require('v8');
 v8.setFlagsFromString('--max-old-space-size=256');
 
-let mongoose = null;
-let MongoStore = null;
-try {
-    mongoose = require('mongoose');
-    const wwebJsMongo = require('wwebjs-mongo');
-    MongoStore = wwebJsMongo.MongoStore;
-    console.log('IMPORT DEBUG -> wwebjs-mongo module:', Object.keys(wwebJsMongo || {}));
-    console.log('IMPORT DEBUG -> MongoStore extracted:', typeof MongoStore);
-} catch (error) {
-    console.warn('MongoDB dependencies not available. Running without persistence.');
-}
-
-console.log('DEPENDENCIES DEBUG -> mongoose loaded:', Boolean(mongoose), 'MongoStore loaded:', Boolean(MongoStore));
-
-const { Client, LocalAuth, RemoteAuth } = require('whatsapp-web.js');
+const wwebjs = require('whatsapp-web.js');
+const Client = wwebjs.Client;
+const NoAuth = wwebjs.NoAuth;
 const QRCode = require('qrcode');
 
 const GROUP_IDS = {
@@ -67,11 +55,6 @@ const MAX_HEAP_MB = Number(process.env.MAX_HEAP_MB || 220);
 const MONGODB_URI = process.env.MONGODB_URI;
 const MONGODB_DB = process.env.MONGODB_DB || 'draxorix_bot';
 const SESSION_CLIENT_ID = process.env.SESSION_CLIENT_ID || 'draxorix-bot-clean-session';
-const parsedRemoteBackupSyncMs = Number(process.env.REMOTE_BACKUP_SYNC_INTERVAL_MS);
-const REMOTE_BACKUP_SYNC_INTERVAL_MS = Math.max(
-    60 * 1000,
-    Number.isFinite(parsedRemoteBackupSyncMs) ? parsedRemoteBackupSyncMs : 60 * 1000
-);
 
 console.log('ENV DEBUG -> MONGODB_URI set:', Boolean(MONGODB_URI));
 console.log('ENV DEBUG -> MONGODB_URI value (first 30 chars):', MONGODB_URI ? MONGODB_URI.substring(0, 30) + '...' : 'NOT SET');
@@ -119,7 +102,6 @@ let mongoDb = null;
 let mongoStateCollection = null;
 let mongoEventsCollection = null;
 let mongoFichasCollection = null;
-let mongoStore = null;
 let pendingStateSaveTimeout = null;
 let stateSaveInFlight = null;
 const processedMessageIds = new Map();
@@ -155,23 +137,12 @@ app.listen(WEB_PORT, '0.0.0.0', () => {
 
 function createClient() {
     console.log('SESSION DEBUG -> createClient() -> creando cliente de WhatsApp');
-    console.log('SESSION DEBUG -> mongoStore available:', Boolean(mongoStore));
-
-    const authStrategy = mongoStore
-        ? new RemoteAuth({
-            clientId: SESSION_CLIENT_ID,
-            store: mongoStore,
-            // RemoteAuth solo acepta >= 60s. Mantenerlo bajo evita perder la primera copia
-            // si el proceso se reinicia poco después de autenticar.
-            backupSyncIntervalMs: REMOTE_BACKUP_SYNC_INTERVAL_MS
-        })
-        : new LocalAuth({ clientId: SESSION_CLIENT_ID });
-
-    console.log('SESSION DEBUG -> Using auth strategy:', mongoStore ? 'RemoteAuth' : 'LocalAuth');
+    console.log('SESSION DEBUG -> Using auth strategy: NoAuth (sin persistencia)');
     console.log('SESSION DEBUG -> clientId:', SESSION_CLIENT_ID);
 
     return new Client({
-        authStrategy,
+        // Sin guardado/recuperacion de sesion: requiere QR en cada arranque.
+        authStrategy: NoAuth ? new NoAuth() : undefined,
         restartOnAuthFail: true,
         takeoverOnConflict: true,
         takeoverTimeoutMs: 0,
@@ -300,18 +271,8 @@ function assignLoadedState(target, source) {
 async function connectMongo() {
     console.log('\n========== CONNECT_MONGO_START ==========');
     console.log('CONNECT MONGO DEBUG -> Starting connectMongo');
-    console.log('CONNECT MONGO DEBUG -> mongoose available:', Boolean(mongoose));
-    console.log('CONNECT MONGO DEBUG -> MongoStore available:', Boolean(MongoStore));
     console.log('CONNECT MONGO DEBUG -> MONGODB_URI defined:', Boolean(MONGODB_URI));
     console.log('CONNECT MONGO DEBUG -> MONGODB_URI value (first 50 chars):', MONGODB_URI ? MONGODB_URI.substring(0, 50) + '...' : 'UNDEFINED');
-
-    if (!mongoose || !MongoStore) {
-        console.error('CONNECT MONGO ERROR -> MongoDB dependencies not available!');
-        console.error('  mongoose:', Boolean(mongoose));
-        console.error('  MongoStore:', Boolean(MongoStore));
-        console.log('========== CONNECT_MONGO_END (Dependencies missing) ==========\n');
-        return;
-    }
 
     if (!MONGODB_URI) {
         console.error('CONNECT MONGO ERROR -> MONGODB_URI not set!');
@@ -322,16 +283,6 @@ async function connectMongo() {
     console.log('CONNECT MONGO DEBUG -> Attempting to connect to MongoDB...');
     try {
         console.log('MongoDB connect -> trying to connect with configured URI');
-        await mongoose.connect(MONGODB_URI, {
-            dbName: MONGODB_DB
-        });
-
-        console.log('CONNECT MONGO DEBUG -> Mongoose connected. Creating MongoStore...');
-        console.log('CONNECT MONGO DEBUG -> MongoStore class:', typeof MongoStore, 'Is Function:', typeof MongoStore === 'function');
-        
-        mongoStore = new MongoStore({ mongoose });
-        
-        console.log('CONNECT MONGO DEBUG -> MongoStore created successfully');
         mongoClient = new MongoClient(MONGODB_URI);
         await mongoClient.connect();
         mongoDb = mongoClient.db(MONGODB_DB);
@@ -349,7 +300,6 @@ async function connectMongo() {
         console.error('Error name:', error.name);
         console.error('Error code:', error.code);
         console.error('Full error:', error);
-        mongoStore = null;
         mongoClient = null;
         mongoDb = null;
         mongoStateCollection = null;
@@ -537,16 +487,12 @@ function monitorChromiumPage(page, label) {
     monitoredChromiumPages.add(page);
 
     page.on('error', error => {
+        if (isRestarting) {
+            return;
+        }
+
         const isCritical =
-            (client && client.pupPage && page === client.pupPage) ||
-            (() => {
-                try {
-                    const url = typeof page.url === 'function' ? page.url() : '';
-                    return typeof url === 'string' && url.includes('web.whatsapp.com');
-                } catch {
-                    return false;
-                }
-            })();
+            (client && client.pupPage && page === client.pupPage);
 
         console.error(`Chromium page error (${label}) critical=${isCritical}: ${getErrorMessage(error)}`);
 
@@ -565,16 +511,12 @@ function monitorChromiumPage(page, label) {
     });
 
     page.on('close', () => {
+        if (isRestarting) {
+            return;
+        }
+
         const isCritical =
-            (client && client.pupPage && page === client.pupPage) ||
-            (() => {
-                try {
-                    const url = typeof page.url === 'function' ? page.url() : '';
-                    return typeof url === 'string' && url.includes('web.whatsapp.com');
-                } catch {
-                    return false;
-                }
-            })();
+            (client && client.pupPage && page === client.pupPage);
 
         console.error(`Chromium page cerrada (${label}) critical=${isCritical}.`);
 
@@ -1236,9 +1178,8 @@ async function optimizeChromiumResources(currentClient) {
             }
         }
 
-        if (browser && typeof browser.pages === 'function') {
-            const pages = await browser.pages();
-            pages.forEach((page, index) => monitorChromiumPage(page, `existing-${index}`));
+        if (currentClient && currentClient.pupPage) {
+            monitorChromiumPage(currentClient.pupPage, 'pupPage');
         }
 
         if (browser && typeof browser.on === 'function') {
@@ -1249,6 +1190,7 @@ async function optimizeChromiumResources(currentClient) {
                     }
 
                     const page = await target.page();
+                    // Monitoreo "best-effort": normalmente el estado critico es pupPage.
                     monitorChromiumPage(page, 'targetcreated');
                 } catch (error) {
                     handleChromiumOperationError(error, 'monitor targetcreated', { restart: false });
@@ -2084,13 +2026,7 @@ function bindClientEvents(currentClient) {
     currentClient.on('authenticated', () => {
         touchHealth();
         isChromiumConnected = true;
-        console.log('SESSION DEBUG -> Sesion autenticada - guardando en MongoDB');
-        console.log('SESSION DEBUG -> Primera autenticacion exitosa - sesion deberia guardarse');
-    });
-
-    currentClient.on('remote_session_saved', () => {
-        touchHealth();
-        console.log('SESSION DEBUG -> Sesion guardada en MongoDB (remote_session_saved)');
+        console.log('SESSION DEBUG -> Sesion autenticada');
     });
 
     currentClient.on('auth_failure', message => {
@@ -2239,10 +2175,6 @@ async function shutdownPersistence() {
         await mongoClient.close();
         mongoClient = null;
     }
-
-    if (mongoose.connection.readyState !== 0) {
-        await mongoose.disconnect();
-    }
 }
 
 function startSchedulers() {
@@ -2297,7 +2229,6 @@ async function bootstrap() {
 
     await connectMongo();
     
-    console.log('BOOTSTRAP DEBUG -> After connectMongo, mongoStore status:', Boolean(mongoStore));
     console.log('BOOTSTRAP DEBUG -> After connectMongo, mongoFichasCollection status:', Boolean(mongoFichasCollection));
     
     await loadPersistentState();
