@@ -1,6 +1,17 @@
 const express = require('express');
 const { MongoClient } = require('mongodb');
 
+// Memory optimization for Railway
+if (global.gc) {
+    setInterval(() => {
+        global.gc();
+    }, 30000); // Force GC every 30 seconds
+}
+
+// Limit heap size
+const v8 = require('v8');
+v8.setFlagsFromString('--max-old-space-size=256');
+
 let mongoose = null;
 let MongoStore = null;
 try {
@@ -55,7 +66,7 @@ const MAX_RSS_MB = Number(process.env.MAX_RSS_MB || 420);
 const MAX_HEAP_MB = Number(process.env.MAX_HEAP_MB || 220);
 const MONGODB_URI = process.env.MONGODB_URI;
 const MONGODB_DB = process.env.MONGODB_DB || 'draxorix_bot';
-const SESSION_CLIENT_ID = process.env.SESSION_CLIENT_ID || 'draxorix-bot-clean';
+const SESSION_CLIENT_ID = process.env.SESSION_CLIENT_ID || 'draxorix-bot-clean-session';
 
 console.log('ENV DEBUG -> MONGODB_URI set:', Boolean(MONGODB_URI));
 console.log('ENV DEBUG -> MONGODB_URI value (first 30 chars):', MONGODB_URI ? MONGODB_URI.substring(0, 30) + '...' : 'NOT SET');
@@ -189,7 +200,28 @@ function createClient() {
                 '--mute-audio',
                 '--no-default-browser-check',
                 '--password-store=basic',
-                '--use-mock-keychain'
+                '--use-mock-keychain',
+                '--memory-pressure-off',
+                '--max_old_space_size=256',
+                '--memory-pressure-off',
+                '--max_new_space_size=128',
+                '--memory-reducer',
+                '--disable-background-timer-throttling',
+                '--disable-low-end-device-mode',
+                '--disable-background-media-download',
+                '--disable-print-preview',
+                '--disable-component-update',
+                '--disable-domain-reliability',
+                '--disable-client-side-phishing-detection',
+                '--disable-background-networking',
+                '--no-default-browser-check',
+                '--disable-sync',
+                '--disable-translate',
+                '--hide-scrollbars',
+                '--metrics-recording-only',
+                '--no-first-run',
+                '--safebrowsing-disable-auto-update',
+                '--disable-component-extensions-with-background-pages'
             ]
         }
     });
