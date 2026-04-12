@@ -55,6 +55,7 @@ const MONGODB_DB = process.env.MONGODB_DB || 'draxorix_bot';
 const SESSION_CLIENT_ID = process.env.SESSION_CLIENT_ID || 'draxorix-bot';
 
 console.log('ENV DEBUG -> MONGODB_URI set:', Boolean(MONGODB_URI));
+console.log('ENV DEBUG -> MONGODB_URI value (first 30 chars):', MONGODB_URI ? MONGODB_URI.substring(0, 30) + '...' : 'NOT SET');
 console.log('ENV DEBUG -> MONGODB_DB:', MONGODB_DB);
 console.log('ENV DEBUG -> SESSION_CLIENT_ID:', SESSION_CLIENT_ID);
 
@@ -253,18 +254,24 @@ function assignLoadedState(target, source) {
 }
 
 async function connectMongo() {
+    console.log('\n========== CONNECT_MONGO_START ==========');
     console.log('CONNECT MONGO DEBUG -> Starting connectMongo');
     console.log('CONNECT MONGO DEBUG -> mongoose available:', Boolean(mongoose));
     console.log('CONNECT MONGO DEBUG -> MongoStore available:', Boolean(MongoStore));
     console.log('CONNECT MONGO DEBUG -> MONGODB_URI defined:', Boolean(MONGODB_URI));
+    console.log('CONNECT MONGO DEBUG -> MONGODB_URI value (first 50 chars):', MONGODB_URI ? MONGODB_URI.substring(0, 50) + '...' : 'UNDEFINED');
 
     if (!mongoose || !MongoStore) {
-        console.error('CONNECT MONGO ERROR -> MongoDB dependencies not available. Skipping MongoDB connection.');
+        console.error('CONNECT MONGO ERROR -> MongoDB dependencies not available!');
+        console.error('  mongoose:', Boolean(mongoose));
+        console.error('  MongoStore:', Boolean(MongoStore));
+        console.log('========== CONNECT_MONGO_END (Dependencies missing) ==========\n');
         return;
     }
 
     if (!MONGODB_URI) {
-        console.error('CONNECT MONGO ERROR -> MONGODB_URI not set. MongoDB connection skipped.');
+        console.error('CONNECT MONGO ERROR -> MONGODB_URI not set!');
+        console.log('========== CONNECT_MONGO_END (No URI) ==========\n');
         return;
     }
 
@@ -286,15 +293,20 @@ async function connectMongo() {
         await mongoEventsCollection.createIndex({ createdAt: -1 });
         await mongoFichasCollection.createIndex({ userId: 1 }, { unique: true });
         console.log(`MongoDB conectado a la base "${MONGODB_DB}".`);
+        console.log('========== CONNECT_MONGO_END (SUCCESS) ==========\n');
     } catch (error) {
-        console.error('Error conectando a MongoDB:', getErrorMessage(error));
-        console.error('CONNECT MONGO ERROR -> Full error details:', error);
+        console.error('CONNECT MONGO ERROR -> Exception during connection:');
+        console.error('Error message:', getErrorMessage(error));
+        console.error('Error name:', error.name);
+        console.error('Error code:', error.code);
+        console.error('Full error:', error);
         mongoStore = null;
         mongoClient = null;
         mongoDb = null;
         mongoStateCollection = null;
         mongoEventsCollection = null;
         mongoFichasCollection = null;
+        console.log('========== CONNECT_MONGO_END (FAILED) ==========\n');
     }
 }
 
@@ -2189,15 +2201,27 @@ process.on('SIGINT', async () => {
 });
 
 async function bootstrap() {
+    console.log('\n\n========== BOOTSTRAP_START ==========');
     console.log('BOOTSTRAP DEBUG -> Starting bootstrap');
     console.log('BOOTSTRAP DEBUG -> MONGODB_URI present:', Boolean(process.env.MONGODB_URI));
     console.log('BOOTSTRAP DEBUG -> MONGODB_DB:', process.env.MONGODB_DB || 'draxorix_bot');
     console.log('BOOTSTRAP DEBUG -> SESSION_CLIENT_ID:', process.env.SESSION_CLIENT_ID || 'draxorix-bot');
+    console.log('BOOTSTRAP DEBUG -> About to connect to MongoDB...');
 
     await connectMongo();
+    
+    console.log('BOOTSTRAP DEBUG -> After connectMongo, mongoStore status:', Boolean(mongoStore));
+    console.log('BOOTSTRAP DEBUG -> After connectMongo, mongoFichasCollection status:', Boolean(mongoFichasCollection));
+    
     await loadPersistentState();
+    
+    console.log('BOOTSTRAP DEBUG -> Persistent state loaded. Starting schedulers...');
     startSchedulers();
+    
+    console.log('BOOTSTRAP DEBUG -> Schedulers started. Starting client...');
     await startClient();
+    
+    console.log('========== BOOTSTRAP_END ==========\n');
 }
 
 bootstrap().catch(error => {
