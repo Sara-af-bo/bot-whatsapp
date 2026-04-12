@@ -1,5 +1,6 @@
 const express = require('express');
 const { MongoClient } = require('mongodb');
+const path = require('path');
 
 // Memory optimization for Railway
 if (global.gc) {
@@ -23,6 +24,91 @@ try {
 }
 
 console.log('DEPENDENCIES DEBUG -> mongoose loaded:', Boolean(mongoose), 'MongoStore loaded:', Boolean(MongoStore));
+
+class FixedMongoStore {
+    constructor({ mongoose } = {}) {
+        if (!mongoose) {
+            throw new Error('A valid Mongoose instance is required for FixedMongoStore.');
+        }
+        this.mongoose = mongoose;
+    }
+
+    getSessionKey(session) {
+        const normalized = String(session || '').trim();
+        return normalized ? path.basename(normalized) : '';
+    }
+
+    getBucket(sessionKey) {
+        return new this.mongoose.mongo.GridFSBucket(this.mongoose.connection.db, {
+            bucketName: `whatsapp-${sessionKey}`
+        });
+    }
+
+    async sessionExists({ session } = {}) {
+        const sessionKey = this.getSessionKey(session);
+        if (!sessionKey) {
+            return false;
+        }
+
+        const filesCollection = this.mongoose.connection.db.collection(`whatsapp-${sessionKey}.files`);
+        const count = await filesCollection.countDocuments();
+        return count > 0;
+    }
+
+    async save({ session } = {}) {
+        const sessionKey = this.getSessionKey(session);
+        if (!sessionKey) {
+            throw new Error('FixedMongoStore.save requires a valid session key.');
+        }
+
+        const bucket = this.getBucket(sessionKey);
+        const zipPath = `${session}.zip`;
+        const filename = `${sessionKey}.zip`;
+
+        await new Promise((resolve, reject) => {
+            require('fs')
+                .createReadStream(zipPath)
+                .pipe(bucket.openUploadStream(filename))
+                .on('error', reject)
+                .on('close', resolve);
+        });
+
+        const documents = await bucket.find({ filename }).toArray();
+        if (documents.length > 1) {
+            const oldest = documents.reduce((a, b) => (a.uploadDate < b.uploadDate ? a : b));
+            await bucket.delete(oldest._id);
+        }
+    }
+
+    async extract({ session, path: outputPath } = {}) {
+        const sessionKey = this.getSessionKey(session);
+        if (!sessionKey) {
+            throw new Error('FixedMongoStore.extract requires a valid session key.');
+        }
+
+        const bucket = this.getBucket(sessionKey);
+        const filename = `${sessionKey}.zip`;
+
+        return new Promise((resolve, reject) => {
+            bucket.openDownloadStreamByName(filename)
+                .pipe(require('fs').createWriteStream(outputPath))
+                .on('error', reject)
+                .on('close', resolve);
+        });
+    }
+
+    async delete({ session } = {}) {
+        const sessionKey = this.getSessionKey(session);
+        if (!sessionKey) {
+            return;
+        }
+
+        const bucket = this.getBucket(sessionKey);
+        const filename = `${sessionKey}.zip`;
+        const documents = await bucket.find({ filename }).toArray();
+        await Promise.all(documents.map(doc => bucket.delete(doc._id)));
+    }
+}
 
 const wwebjs = require('whatsapp-web.js');
 const Client = wwebjs.Client;
@@ -363,6 +449,70 @@ function assignLoadedState(target, source) {
     Object.assign(target, source || {});
 }
 
+async function migrateLegacyRemoteAuthSessionIfNeeded() {
+    if (!mongoose || !mongoose.connection || !mongoose.connection.db) {
+        return;
+    }
+
+    if (AUTH_STRATEGY !== 'remoteauth') {
+        return;
+    }
+
+    const sessionKey = `RemoteAuth-${SESSION_CLIENT_ID}`;
+    const db = mongoose.connection.db;
+    const expectedFilesCollection = `whatsapp-${sessionKey}.files`;
+
+    try {
+        const expectedCount = await db.collection(expectedFilesCollection).countDocuments();
+        if (expectedCount > 0) {
+            return;
+        }
+    } catch {
+        // ignore
+    }
+
+    try {
+        const collections = await db.listCollections().toArray();
+        const legacyFilesCollections = collections
+            .map(col => col && col.name)
+            .filter(Boolean)
+            .filter(name => name.endsWith('.files'))
+            .filter(name => name.includes(sessionKey))
+            .filter(name => name !== expectedFilesCollection);
+
+        if (legacyFilesCollections.length === 0) {
+            return;
+        }
+
+        const legacyFiles = legacyFilesCollections[0];
+        const legacyBucketName = legacyFiles.slice(0, -'.files'.length);
+
+        console.warn(`CONNECT MONGO WARN -> Detectada sesión legacy en GridFS: ${legacyBucketName}. Migrando a whatsapp-${sessionKey}...`);
+
+        const legacyBucket = new mongoose.mongo.GridFSBucket(db, { bucketName: legacyBucketName });
+        const targetBucket = new mongoose.mongo.GridFSBucket(db, { bucketName: `whatsapp-${sessionKey}` });
+
+        const legacyDocs = await legacyBucket.find({}).sort({ uploadDate: -1 }).limit(1).toArray();
+        if (legacyDocs.length === 0) {
+            return;
+        }
+
+        const doc = legacyDocs[0];
+        const targetFilename = `${sessionKey}.zip`;
+
+        await new Promise((resolve, reject) => {
+            legacyBucket.openDownloadStream(doc._id)
+                .pipe(targetBucket.openUploadStream(targetFilename))
+                .on('error', reject)
+                .on('finish', resolve);
+        });
+
+        console.warn('CONNECT MONGO WARN -> Migración legacy completada.');
+    } catch (error) {
+        console.warn('CONNECT MONGO WARN -> No se pudo migrar sesión legacy:', getErrorMessage(error));
+    }
+}
+
 async function connectMongo() {
     console.log('\n========== CONNECT_MONGO_START ==========');
     console.log('CONNECT MONGO DEBUG -> Starting connectMongo');
@@ -381,8 +531,11 @@ async function connectMongo() {
 
         if (AUTH_STRATEGY === 'remoteauth' && mongoose && MongoStore) {
             await mongoose.connect(MONGODB_URI, { dbName: MONGODB_DB });
-            mongoStore = new MongoStore({ mongoose });
-            console.log('CONNECT MONGO DEBUG -> MongoStore listo (sesiones WhatsApp).');
+            await migrateLegacyRemoteAuthSessionIfNeeded();
+            // wwebjs-mongo tiene un desfase: RemoteAuth guarda con "session" como path,
+            // pero sessionExists/extract usan "session" como nombre. Normalizamos.
+            mongoStore = new FixedMongoStore({ mongoose });
+            console.log('CONNECT MONGO DEBUG -> FixedMongoStore listo (sesiones WhatsApp).');
         } else {
             mongoStore = null;
         }
