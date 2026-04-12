@@ -135,6 +135,7 @@ app.listen(WEB_PORT, '0.0.0.0', () => {
 
 function createClient() {
     console.log('createClient() -> creando cliente de WhatsApp');
+    console.log('CREATE CLIENT DEBUG -> mongoStore available:', Boolean(mongoStore));
 
     const authStrategy = mongoStore
         ? new RemoteAuth({
@@ -143,6 +144,8 @@ function createClient() {
             backupSyncIntervalMs: 5 * 60 * 1000
         })
         : new LocalAuth({ clientId: SESSION_CLIENT_ID });
+
+    console.log('CREATE CLIENT DEBUG -> Using auth strategy:', mongoStore ? 'RemoteAuth' : 'LocalAuth');
 
     return new Client({
         authStrategy,
@@ -250,17 +253,23 @@ function assignLoadedState(target, source) {
 }
 
 async function connectMongo() {
+    console.log('CONNECT MONGO DEBUG -> Starting connectMongo');
+    console.log('CONNECT MONGO DEBUG -> mongoose available:', Boolean(mongoose));
+    console.log('CONNECT MONGO DEBUG -> MongoStore available:', Boolean(MongoStore));
+    console.log('CONNECT MONGO DEBUG -> MONGODB_URI defined:', Boolean(MONGODB_URI));
+
     if (!mongoose || !MongoStore) {
-        console.warn('MongoDB dependencies not available. Skipping MongoDB connection.');
+        console.error('CONNECT MONGO ERROR -> MongoDB dependencies not available. Skipping MongoDB connection.');
         return;
     }
 
-    try {
-        if (!MONGODB_URI) {
-            console.error('MongoDB no configurado. Define MONGODB_URI para guardar datos.');
-            return;
-        }
+    if (!MONGODB_URI) {
+        console.error('CONNECT MONGO ERROR -> MONGODB_URI not set. MongoDB connection skipped.');
+        return;
+    }
 
+    console.log('CONNECT MONGO DEBUG -> Attempting to connect to MongoDB...');
+    try {
         console.log('MongoDB connect -> trying to connect with configured URI');
         await mongoose.connect(MONGODB_URI, {
             dbName: MONGODB_DB
@@ -279,7 +288,7 @@ async function connectMongo() {
         console.log(`MongoDB conectado a la base "${MONGODB_DB}".`);
     } catch (error) {
         console.error('Error conectando a MongoDB:', getErrorMessage(error));
-        console.error(error);
+        console.error('CONNECT MONGO ERROR -> Full error details:', error);
         mongoStore = null;
         mongoClient = null;
         mongoDb = null;
@@ -2180,6 +2189,11 @@ process.on('SIGINT', async () => {
 });
 
 async function bootstrap() {
+    console.log('BOOTSTRAP DEBUG -> Starting bootstrap');
+    console.log('BOOTSTRAP DEBUG -> MONGODB_URI present:', Boolean(process.env.MONGODB_URI));
+    console.log('BOOTSTRAP DEBUG -> MONGODB_DB:', process.env.MONGODB_DB || 'draxorix_bot');
+    console.log('BOOTSTRAP DEBUG -> SESSION_CLIENT_ID:', process.env.SESSION_CLIENT_ID || 'draxorix-bot');
+
     await connectMongo();
     await loadPersistentState();
     startSchedulers();
