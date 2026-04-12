@@ -55,7 +55,7 @@ const MAX_RSS_MB = Number(process.env.MAX_RSS_MB || 420);
 const MAX_HEAP_MB = Number(process.env.MAX_HEAP_MB || 220);
 const MONGODB_URI = process.env.MONGODB_URI;
 const MONGODB_DB = process.env.MONGODB_DB || 'draxorix_bot';
-const SESSION_CLIENT_ID = process.env.SESSION_CLIENT_ID || 'draxorix-bot-fresh';
+const SESSION_CLIENT_ID = process.env.SESSION_CLIENT_ID || 'draxorix-bot-clean';
 
 console.log('ENV DEBUG -> MONGODB_URI set:', Boolean(MONGODB_URI));
 console.log('ENV DEBUG -> MONGODB_URI value (first 30 chars):', MONGODB_URI ? MONGODB_URI.substring(0, 30) + '...' : 'NOT SET');
