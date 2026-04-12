@@ -101,6 +101,9 @@ const EXTRA_PUPPETEER_ARGS = String(process.env.PUPPETEER_ARGS || '')
     .map(value => value.trim())
     .filter(Boolean);
 const PUPPETEER_ARGS = Array.from(new Set([...DEFAULT_PUPPETEER_ARGS, ...EXTRA_PUPPETEER_ARGS]));
+const DEFAULT_CHROME_PATH = process.env.PUPPETEER_EXECUTABLE_PATH
+    || process.env.CHROME_BIN
+    || (process.platform === 'linux' ? '/usr/bin/chromium' : '');
 
 console.log('ENV DEBUG -> MONGODB_URI set:', Boolean(MONGODB_URI));
 console.log('ENV DEBUG -> MONGODB_URI value (first 30 chars):', MONGODB_URI ? MONGODB_URI.substring(0, 30) + '...' : 'NOT SET');
@@ -221,7 +224,7 @@ function createClient() {
         // 0 = ilimitado. Evita desconexiones por "Max qrcode retries reached" mientras escaneas.
         qrMaxRetries: 0,
         puppeteer: {
-            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || process.env.CHROME_BIN,
+            executablePath: DEFAULT_CHROME_PATH || undefined,
             headless: true,
             protocolTimeout: 240000,
             ignoreHTTPSErrors: true,
