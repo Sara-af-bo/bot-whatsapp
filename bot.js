@@ -26,7 +26,6 @@ const ADMIN_IDS = [
 ];
 
 const ALLOWED_GROUPS = [GROUP_IDS.LOBBY, GROUP_IDS.ROOKIE, GROUP_IDS.ELITE];
-const ALLOWED_PREFIXES = ['34', '52', '54', '57', '51', '58', '56', '593', '591', '595', '598'];
 const INSULTS = ['puta', 'hijo de puta', 'gilipollas', 'idiota', 'imbecil', 'subnormal', 'cabron', 'capullo', 'mierda', 'payaso'];
 const LINK_REGEX = /(https?:\/\/|www\.|\.com|\.gg|\.net)/i;
 
@@ -41,7 +40,7 @@ const STALE_USER_TTL_MS = 6 * 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 30 * 60 * 1000;
 
 const HEALTHCHECK_INTERVAL_MS = 2 * 60 * 1000;
-const STALE_HEALTHCHECK_MS = 8 * 60 * 1000;
+const STALE_HEALTHCHECK_MS = 2 * 60 * 60 * 1000; // 2 horas
 const FORCED_RECYCLE_MS = 0;
 const RESTART_DELAY_MS = 15000;
 const MIN_RESTART_INTERVAL_MS = 2 * 60 * 1000;
@@ -49,8 +48,8 @@ const BAD_STATE_RESTART_THRESHOLD = 5;
 const WEB_PORT = 3000;
 const MAX_RSS_MB = Number(process.env.MAX_RSS_MB || 420);
 const MAX_HEAP_MB = Number(process.env.MAX_HEAP_MB || 220);
-const MONGODB_URI = 'mongodb+srv://saraafilal12_db_user:UzyX51czf1UCTivV@cluster0.cif83zy.mongodb.net/?retryWrites=true&w=majority';
-const MONGODB_DB = 'draxorix_bot';
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://saraafilal12_db_user:UzyX51czf1UCTivV@cluster0.cif83zy.mongodb.net/?retryWrites=true&w=majority';
+const MONGODB_DB = process.env.MONGODB_DB || 'draxorix_bot';
 const SESSION_CLIENT_ID = process.env.SESSION_CLIENT_ID || 'draxorix-bot';
 const STATE_SAVE_DEBOUNCE_MS = 1000;
 const TRACKED_GROUP_IDS = Object.values(GROUP_IDS);
@@ -1182,14 +1181,6 @@ async function manejarEntradaLobby(notification) {
         return;
     }
 
-    if (!ALLOWED_PREFIXES.some(prefix => number.startsWith(prefix))) {
-        logChatEvent(chat, 'SEND_MESSAGE', `motivo=numero-no-permitido usuario=${user}`);
-        await chat.sendMessage('Numero no permitido.');
-        await safeRemoveParticipants(chat, [user]);
-        deleteUserState(user);
-        return;
-    }
-
     if (lastLeave && lastLeave.chatId === chat.id._serialized) {
         logChatEvent(chat, 'SEND_MESSAGE', `motivo=reingreso-reciente usuario=${user}`);
         await chat.sendMessage(
@@ -1260,6 +1251,8 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
             '!expulsar @usuario',
             '!ban @usuario',
             '!unban @usuario',
+            '!mute @usuario',
+            '!unmute @usuario',
             '!borrar (respondiendo a un mensaje)',
             '!cerrar',
             '!abrir',
@@ -1491,6 +1484,40 @@ async function manejarComandosAdmin(msg, chat, texto, usuario) {
         return true;
     }
 
+    if (comando === '!mute') {
+        if (!objetivo) {
+            await chat.sendMessage('Debes mencionar a alguien.');
+            return true;
+        }
+
+        muteUser(objetivo);
+        logChatEvent(chat, 'SEND_MESSAGE', `motivo=mute objetivo=${objetivo} solicitado-por=${usuario}`);
+        await chat.sendMessage(`Mute aplicado a ${formatUserMention(objetivo)} por 1 minuto.`, {
+            mentions: [objetivo]
+        });
+        return true;
+    }
+
+    if (comando === '!unmute') {
+        if (!objetivo) {
+            await chat.sendMessage('Debes mencionar a alguien.');
+            return true;
+        }
+
+        if (!mutedUsers[objetivo]) {
+            await chat.sendMessage(`${formatUserMention(objetivo)} no está silenciado.`);
+            return true;
+        }
+
+        delete mutedUsers[objetivo];
+        scheduleStateSave();
+        logChatEvent(chat, 'SEND_MESSAGE', `motivo=unmute objetivo=${objetivo} solicitado-por=${usuario}`);
+        await chat.sendMessage(`Mute removido a ${formatUserMention(objetivo)}.`, {
+            mentions: [objetivo]
+        });
+        return true;
+    }
+
     if (comando === '!borrar') {
         if (!msg.hasQuotedMsg) {
             await chat.sendMessage('Usa !borrar respondiendo al mensaje que quieras eliminar.');
@@ -1613,8 +1640,7 @@ async function manejarModeracionLobby(msg, chat, text, user) {
 
     if (userMessages[user].length > FLOOD_LIMIT) {
         logChatEvent(chat, 'SEND_MESSAGE', `motivo=spam-detectado usuario=${user}`);
-        await chat.sendMessage('Spam detectado. Mute de 1 minuto.');
-        muteUser(user);
+        await chat.sendMessage('Spam detectado. Evita enviar mensajes repetidos.');
         return true;
     }
 
@@ -1961,11 +1987,6 @@ function bindClientEvents(currentClient) {
     currentClient.on('disconnected', reason => {
         isChromiumConnected = false;
         console.error(`Cliente desconectado: ${reason}`);
-
-        if (reason === 'NAVIGATION' || reason === 'TIMEOUT') {
-            console.log('Desconexion temporal detectada; no se reinicia para evitar bucle.');
-            return;
-        }
 
         restartClient(`client disconnected: ${reason}`).catch(error => {
             console.error('No se pudo reiniciar tras desconexion:', getErrorMessage(error));
