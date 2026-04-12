@@ -297,7 +297,7 @@ async function connectMongo() {
         mongoStateCollection = mongoDb.collection('bot_state');
         mongoEventsCollection = mongoDb.collection('bot_events');
         mongoFichasCollection = mongoDb.collection('fichas');
-        await mongoStateCollection.createIndex({ _id: 1 }, { unique: true });
+        await mongoStateCollection.createIndex({ _id: 1 });
         await mongoEventsCollection.createIndex({ createdAt: -1 });
         await mongoFichasCollection.createIndex({ userId: 1 }, { unique: true });
         console.log(`MongoDB conectado a la base "${MONGODB_DB}".`);
