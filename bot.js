@@ -56,24 +56,29 @@ class FixedMongoStore {
         return count > 0;
     }
 
-    async save({ session } = {}) {
-        const sessionKey = this.getSessionKey(session);
-        if (!sessionKey) {
-            throw new Error('FixedMongoStore.save requires a valid session key.');
-        }
+   async save({ session } = {}) {
+    const sessionKey = this.getSessionKey(session);
+    if (!sessionKey) {
+        throw new Error('FixedMongoStore.save requires a valid session key.');
+    }
 
-        const bucket = this.getBucket(sessionKey);
-        const zipPath = `${session}.zip`;
-        const filename = `${sessionKey}.zip`;
+    const bucket = this.getBucket(sessionKey);
+    const zipPath = path.join(REMOTE_AUTH_PATH, `${session}.zip`);
+    const filename = `${sessionKey}.zip`;
 
-        await new Promise((resolve, reject) => {
-            require('fs')
-                .createReadStream(zipPath)
-                .pipe(bucket.openUploadStream(filename))
-                .on('error', reject)
-                .on('close', resolve);
-        });
+    // 🔥 IMPORTANTE: comprobar si existe
+    if (!fs.existsSync(zipPath)) {
+        console.warn('REMOTEAUTH WARN -> zip no existe aún, se omite guardado:', zipPath);
+        return;
+    }
 
+    await new Promise((resolve, reject) => {
+        fs.createReadStream(zipPath)
+            .pipe(bucket.openUploadStream(filename))
+            .on('error', reject)
+            .on('close', resolve);
+    });
+}
         const documents = await bucket.find({ filename }).toArray();
         if (documents.length > 1) {
             const oldest = documents.reduce((a, b) => (a.uploadDate < b.uploadDate ? a : b));
@@ -206,8 +211,9 @@ class RemoteAuthFastSave extends RemoteAuth {
             // pierdes la sesión y vuelve a pedir QR. Guardamos antes (best-effort) y reintentamos.
             const delays = [
                 REMOTE_INITIAL_SAVE_DELAY_MS,
-                30000,
-                60000
+                5000,
+                10000,
+                20000
             ];
 
             for (const delayMs of delays) {
@@ -239,6 +245,12 @@ const DEFAULT_PUPPETEER_ARGS = [
     '--disable-background-networking',
     '--disable-background-timer-throttling',
     '--disable-renderer-backgrounding',
+    '--single-process',
+    '--disable-software-rasterizer',
+    '--disable-accelerated-2d-canvas',
+    '--disable-infobars',
+    '--disable-browser-side-navigation',
+    '--disable-features=site-per-process',
     '--disable-features=Translate,BackForwardCache'
 ];
 const EXTRA_PUPPETEER_ARGS = String(process.env.PUPPETEER_ARGS || '')
