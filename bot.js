@@ -10,6 +10,8 @@ try {
     console.warn('MongoDB dependencies not available. Running without persistence.');
 }
 
+console.log('DEPENDENCIES DEBUG -> mongoose loaded:', Boolean(mongoose), 'MongoStore loaded:', Boolean(MongoStore));
+
 const { Client, LocalAuth, RemoteAuth } = require('whatsapp-web.js');
 const QRCode = require('qrcode');
 
@@ -51,6 +53,11 @@ const MAX_HEAP_MB = Number(process.env.MAX_HEAP_MB || 220);
 const MONGODB_URI = process.env.MONGODB_URI;
 const MONGODB_DB = process.env.MONGODB_DB || 'draxorix_bot';
 const SESSION_CLIENT_ID = process.env.SESSION_CLIENT_ID || 'draxorix-bot';
+
+console.log('ENV DEBUG -> MONGODB_URI set:', Boolean(MONGODB_URI));
+console.log('ENV DEBUG -> MONGODB_DB:', MONGODB_DB);
+console.log('ENV DEBUG -> SESSION_CLIENT_ID:', SESSION_CLIENT_ID);
+
 const STATE_SAVE_DEBOUNCE_MS = 1000;
 const TRACKED_GROUP_IDS = Object.values(GROUP_IDS);
 const PERSISTED_CHAT_ACTIONS = new Set([
@@ -250,10 +257,11 @@ async function connectMongo() {
 
     try {
         if (!MONGODB_URI) {
-            console.warn('MongoDB no configurado. Define MONGODB_URI para guardar datos.');
+            console.error('MongoDB no configurado. Define MONGODB_URI para guardar datos.');
             return;
         }
 
+        console.log('MongoDB connect -> trying to connect with configured URI');
         await mongoose.connect(MONGODB_URI, {
             dbName: MONGODB_DB
         });
@@ -271,6 +279,7 @@ async function connectMongo() {
         console.log(`MongoDB conectado a la base "${MONGODB_DB}".`);
     } catch (error) {
         console.error('Error conectando a MongoDB:', getErrorMessage(error));
+        console.error(error);
         mongoStore = null;
         mongoClient = null;
         mongoDb = null;
