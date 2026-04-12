@@ -5,7 +5,9 @@ let mongoose = null;
 let MongoStore = null;
 try {
     mongoose = require('mongoose');
-    MongoStore = require('wwebjs-mongo');
+    const wwebJsMongo = require('wwebjs-mongo');
+    MongoStore = wwebJsMongo.StoreFactory || wwebJsMongo;
+    console.log('IMPORT DEBUG -> wwebjs-mongo module:', Object.keys(wwebJsMongo || {}));
 } catch (error) {
     console.warn('MongoDB dependencies not available. Running without persistence.');
 }
@@ -282,7 +284,12 @@ async function connectMongo() {
             dbName: MONGODB_DB
         });
 
+        console.log('CONNECT MONGO DEBUG -> Mongoose connected. Creating MongoStore...');
+        console.log('CONNECT MONGO DEBUG -> MongoStore class:', typeof MongoStore, 'Is Function:', typeof MongoStore === 'function');
+        
         mongoStore = new MongoStore({ mongoose });
+        
+        console.log('CONNECT MONGO DEBUG -> MongoStore created successfully');
         mongoClient = new MongoClient(MONGODB_URI);
         await mongoClient.connect();
         mongoDb = mongoClient.db(MONGODB_DB);
