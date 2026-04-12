@@ -82,6 +82,25 @@ const REMOTE_BACKUP_SYNC_INTERVAL_MS = Math.max(
     60 * 1000,
     Number.isFinite(parsedRemoteBackupSyncMs) ? parsedRemoteBackupSyncMs : 60 * 1000
 );
+const DEFAULT_PUPPETEER_ARGS = [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-gpu',
+    '--no-zygote',
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-extensions',
+    '--disable-background-networking',
+    '--disable-background-timer-throttling',
+    '--disable-renderer-backgrounding',
+    '--disable-features=Translate,BackForwardCache'
+];
+const EXTRA_PUPPETEER_ARGS = String(process.env.PUPPETEER_ARGS || '')
+    .split(',')
+    .map(value => value.trim())
+    .filter(Boolean);
+const PUPPETEER_ARGS = Array.from(new Set([...DEFAULT_PUPPETEER_ARGS, ...EXTRA_PUPPETEER_ARGS]));
 
 console.log('ENV DEBUG -> MONGODB_URI set:', Boolean(MONGODB_URI));
 console.log('ENV DEBUG -> MONGODB_URI value (first 30 chars):', MONGODB_URI ? MONGODB_URI.substring(0, 30) + '...' : 'NOT SET');
@@ -209,52 +228,7 @@ function createClient() {
             handleSIGINT: false,
             handleSIGTERM: false,
             handleSIGHUP: false,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-gpu',
-                '--no-zygote',
-                '--no-first-run',
-                '--noerrdialogs',
-                '--disable-background-networking',
-                '--disable-background-timer-throttling',
-                '--disable-backgrounding-occluded-windows',
-                '--disable-breakpad',
-                '--disable-extensions',
-                '--disable-features=Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints',
-                '--disable-hang-monitor',
-                '--disable-ipc-flooding-protection',
-                '--disable-renderer-backgrounding',
-                '--disable-session-crashed-bubble',
-                '--disable-sync',
-                '--metrics-recording-only',
-                '--mute-audio',
-                '--no-default-browser-check',
-                '--password-store=basic',
-                '--use-mock-keychain',
-                '--memory-pressure-off',
-                '--max_old_space_size=256',
-                '--memory-pressure-off',
-                '--max_new_space_size=128',
-                '--memory-reducer',
-                '--disable-background-timer-throttling',
-                '--disable-low-end-device-mode',
-                '--disable-background-media-download',
-                '--disable-print-preview',
-                '--disable-component-update',
-                '--disable-domain-reliability',
-                '--disable-client-side-phishing-detection',
-                '--disable-background-networking',
-                '--no-default-browser-check',
-                '--disable-sync',
-                '--disable-translate',
-                '--hide-scrollbars',
-                '--metrics-recording-only',
-                '--no-first-run',
-                '--safebrowsing-disable-auto-update',
-                '--disable-component-extensions-with-background-pages'
-            ]
+            args: PUPPETEER_ARGS
         }
     });
 }
