@@ -2,6 +2,9 @@
   "name": "bot",
   "version": "1.0.0",
   "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
   "dependencies": {
     "express": "^4.21.2",
     "mongoose": "^8.13.2",
@@ -11,7 +14,4 @@
     "whatsapp-web.js": "^1.23.0",
     "wwebjs-mongo": "^1.1.0"
   }
-}
-"scripts": {
-  "start": "node bot.js"
 }
