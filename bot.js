@@ -297,6 +297,9 @@ let latestQR = null;
 let badStateCount = 0;
 let scheduledRestartTimeout = null;
 let isChromiumConnected = false;
+let hasAuthenticated = false;
+let hasReady = false;
+let healthTimeoutCount = 0;
 let mongoClient = null;
 let mongoDb = null;
 let mongoStateCollection = null;
@@ -681,6 +684,13 @@ function getErrorMessage(error) {
     }
 
     return String(error);
+}
+
+function isHealthcheckTimeoutError(error) {
+    const message = getErrorMessage(error).toLowerCase();
+    return message.includes('runtime.callfunctionon timed out')
+        || message.includes('protocoltimeout')
+        || message.includes('timed out');
 }
 
 function isChromiumRuntimeError(error) {
@@ -2123,6 +2133,12 @@ async function healthcheckClient() {
         return;
     }
 
+    // Evita llamadas a evaluate/getState mientras aún estamos en QR / sin READY.
+    // En esos estados es frecuente ver timeouts del protocolo y no aportan señal útil.
+    if (!hasReady || latestQR) {
+        return;
+    }
+
     try {
         const state = await client.getState();
         touchHealth();
@@ -2151,6 +2167,16 @@ async function healthcheckClient() {
 
         badStateCount = 0;
     } catch (error) {
+        if (isHealthcheckTimeoutError(error)) {
+            healthTimeoutCount += 1;
+            console.warn(`Healthcheck timeout (${healthTimeoutCount}/3): ${getErrorMessage(error)}`);
+            if (healthTimeoutCount >= 3) {
+                healthTimeoutCount = 0;
+                await restartClient('healthcheck timeouts');
+            }
+            return;
+        }
+
         const handled = handleChromiumOperationError(error, 'Healthcheck', { restart: true });
         if (!handled) {
             console.error('Healthcheck fallo sin reinicio:', getErrorMessage(error));
@@ -2262,6 +2288,8 @@ function bindClientEvents(currentClient) {
     currentClient.on('qr', async qr => {
         touchHealth();
         isChromiumConnected = true;
+        hasAuthenticated = false;
+        hasReady = false;
         console.log('SESSION DEBUG -> QR recibido');
         qrGenerationCount += 1;
         insertEventLog({
@@ -2295,6 +2323,8 @@ function bindClientEvents(currentClient) {
     currentClient.on('ready', async () => {
         touchHealth();
         isChromiumConnected = true;
+        hasReady = true;
+        healthTimeoutCount = 0;
         latestQR = null;
         console.log('SESSION DEBUG -> Bot listo');
         await optimizeChromiumResources(currentClient);
@@ -2303,6 +2333,8 @@ function bindClientEvents(currentClient) {
     currentClient.on('authenticated', () => {
         touchHealth();
         isChromiumConnected = true;
+        hasAuthenticated = true;
+        healthTimeoutCount = 0;
         console.log('SESSION DEBUG -> Sesion autenticada');
     });
 
@@ -2427,6 +2459,9 @@ async function startClient() {
     const newClient = createClient();
     client = newClient;
     isChromiumConnected = false;
+    hasAuthenticated = false;
+    hasReady = false;
+    healthTimeoutCount = 0;
     bindClientEvents(newClient);
 
     lastRestartAt = Date.now();
