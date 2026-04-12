@@ -55,7 +55,7 @@ const MAX_RSS_MB = Number(process.env.MAX_RSS_MB || 420);
 const MAX_HEAP_MB = Number(process.env.MAX_HEAP_MB || 220);
 const MONGODB_URI = process.env.MONGODB_URI;
 const MONGODB_DB = process.env.MONGODB_DB || 'draxorix_bot';
-const SESSION_CLIENT_ID = process.env.SESSION_CLIENT_ID || 'draxorix-bot';
+const SESSION_CLIENT_ID = process.env.SESSION_CLIENT_ID || 'draxorix-bot-fresh';
 
 console.log('ENV DEBUG -> MONGODB_URI set:', Boolean(MONGODB_URI));
 console.log('ENV DEBUG -> MONGODB_URI value (first 30 chars):', MONGODB_URI ? MONGODB_URI.substring(0, 30) + '...' : 'NOT SET');
@@ -292,18 +292,6 @@ async function connectMongo() {
         mongoStore = new MongoStore({ mongoose });
         
         console.log('CONNECT MONGO DEBUG -> MongoStore created successfully');
-        
-        // Verificar si hay sesiones guardadas
-        try {
-            const sessions = await mongoStore.collection.find({}).toArray();
-            console.log('SESSION DEBUG -> Sessions guardadas en MongoDB:', sessions.length);
-            if (sessions.length > 0) {
-                console.log('SESSION DEBUG -> Primera sesion ID:', sessions[0]._id);
-            }
-        } catch (error) {
-            console.log('SESSION DEBUG -> Error checking sessions:', error.message);
-        }
-        
         mongoClient = new MongoClient(MONGODB_URI);
         await mongoClient.connect();
         mongoDb = mongoClient.db(MONGODB_DB);
@@ -2025,6 +2013,7 @@ function bindClientEvents(currentClient) {
         touchHealth();
         isChromiumConnected = true;
         console.log('SESSION DEBUG -> Sesion autenticada - guardando en MongoDB');
+        console.log('SESSION DEBUG -> Primera autenticacion exitosa - sesion deberia guardarse');
     });
 
     currentClient.on('auth_failure', message => {
