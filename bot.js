@@ -1178,6 +1178,11 @@ async function manejarEntradaLobby(notification) {
     }
 
     if (chat.id._serialized !== GROUP_IDS.LOBBY) {
+        // Send welcome message for ELITE and ROOKIE
+        if (chat.id._serialized === GROUP_IDS.ELITE || chat.id._serialized === GROUP_IDS.ROOKIE) {
+            logChatEvent(chat, 'SEND_MESSAGE', `motivo=bienvenida-destino usuario=${user}`);
+            await chat.sendMessage(buildDestinoBienvenida(user));
+        }
         return;
     }
 
