@@ -48,7 +48,7 @@ const BAD_STATE_RESTART_THRESHOLD = 5;
 const WEB_PORT = 3000;
 const MAX_RSS_MB = Number(process.env.MAX_RSS_MB || 420);
 const MAX_HEAP_MB = Number(process.env.MAX_HEAP_MB || 220);
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://draxorix_db:UYUq6K0sW95TmVzI@cluster0.cif83zy.mongodb.net/?appName=Cluster0';
+const MONGODB_URI = process.env.MONGODB_URI;
 const MONGODB_DB = process.env.MONGODB_DB || 'draxorix_bot';
 const SESSION_CLIENT_ID = process.env.SESSION_CLIENT_ID || 'draxorix-bot';
 const STATE_SAVE_DEBOUNCE_MS = 1000;
