@@ -67,6 +67,11 @@ const MAX_HEAP_MB = Number(process.env.MAX_HEAP_MB || 220);
 const MONGODB_URI = process.env.MONGODB_URI;
 const MONGODB_DB = process.env.MONGODB_DB || 'draxorix_bot';
 const SESSION_CLIENT_ID = process.env.SESSION_CLIENT_ID || 'draxorix-bot-clean-session';
+const parsedRemoteBackupSyncMs = Number(process.env.REMOTE_BACKUP_SYNC_INTERVAL_MS);
+const REMOTE_BACKUP_SYNC_INTERVAL_MS = Math.max(
+    60 * 1000,
+    Number.isFinite(parsedRemoteBackupSyncMs) ? parsedRemoteBackupSyncMs : 60 * 1000
+);
 
 console.log('ENV DEBUG -> MONGODB_URI set:', Boolean(MONGODB_URI));
 console.log('ENV DEBUG -> MONGODB_URI value (first 30 chars):', MONGODB_URI ? MONGODB_URI.substring(0, 30) + '...' : 'NOT SET');
@@ -156,7 +161,9 @@ function createClient() {
         ? new RemoteAuth({
             clientId: SESSION_CLIENT_ID,
             store: mongoStore,
-            backupSyncIntervalMs: 5 * 60 * 1000
+            // RemoteAuth solo acepta >= 60s. Mantenerlo bajo evita perder la primera copia
+            // si el proceso se reinicia poco después de autenticar.
+            backupSyncIntervalMs: REMOTE_BACKUP_SYNC_INTERVAL_MS
         })
         : new LocalAuth({ clientId: SESSION_CLIENT_ID });
 
@@ -168,7 +175,8 @@ function createClient() {
         restartOnAuthFail: true,
         takeoverOnConflict: true,
         takeoverTimeoutMs: 0,
-        qrMaxRetries: 20,
+        // 0 = ilimitado. Evita desconexiones por "Max qrcode retries reached" mientras escaneas.
+        qrMaxRetries: 0,
         puppeteer: {
             executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || process.env.CHROME_BIN,
             headless: true,
@@ -2009,7 +2017,7 @@ function bindClientEvents(currentClient) {
     currentClient.on('qr', async qr => {
         touchHealth();
         isChromiumConnected = true;
-        console.log('SESSION DEBUG -> GENERANDO QR - Esto significa que NO se recupero sesion de MongoDB');
+        console.log('SESSION DEBUG -> GENERANDO QR (sesion no recuperada o requiere re-login)');
 
         try {
             latestQR = await QRCode.toDataURL(qr, {
@@ -2046,6 +2054,11 @@ function bindClientEvents(currentClient) {
         isChromiumConnected = true;
         console.log('SESSION DEBUG -> Sesion autenticada - guardando en MongoDB');
         console.log('SESSION DEBUG -> Primera autenticacion exitosa - sesion deberia guardarse');
+    });
+
+    currentClient.on('remote_session_saved', () => {
+        touchHealth();
+        console.log('SESSION DEBUG -> Sesion guardada en MongoDB (remote_session_saved)');
     });
 
     currentClient.on('auth_failure', message => {
@@ -2247,7 +2260,7 @@ async function bootstrap() {
     console.log('BOOTSTRAP DEBUG -> Starting bootstrap');
     console.log('BOOTSTRAP DEBUG -> MONGODB_URI present:', Boolean(process.env.MONGODB_URI));
     console.log('BOOTSTRAP DEBUG -> MONGODB_DB:', process.env.MONGODB_DB || 'draxorix_bot');
-    console.log('BOOTSTRAP DEBUG -> SESSION_CLIENT_ID:', process.env.SESSION_CLIENT_ID || 'draxorix-bot');
+    console.log('BOOTSTRAP DEBUG -> SESSION_CLIENT_ID:', SESSION_CLIENT_ID);
     console.log('BOOTSTRAP DEBUG -> About to connect to MongoDB...');
 
     await connectMongo();
