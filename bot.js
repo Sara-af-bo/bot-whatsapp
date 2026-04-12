@@ -76,7 +76,26 @@ const MAX_HEAP_MB = Number(process.env.MAX_HEAP_MB || 220);
 const MONGODB_URI = process.env.MONGODB_URI;
 const MONGODB_DB = process.env.MONGODB_DB || 'draxorix_bot';
 const SESSION_CLIENT_ID = process.env.SESSION_CLIENT_ID || 'draxorix-bot-clean-session';
-const AUTH_STRATEGY = String(process.env.AUTH_STRATEGY || 'noauth').toLowerCase().trim();
+const AUTH_STRATEGY_RAW = String(process.env.AUTH_STRATEGY || 'noauth').toLowerCase().trim();
+const ALLOW_NOAUTH = String(process.env.ALLOW_NOAUTH || '').toLowerCase().trim() === 'true';
+
+function resolveAuthStrategy() {
+    const raw = AUTH_STRATEGY_RAW;
+
+    // "noauth" NO persiste sesión. Para evitar perderla tras reinicios/page-crash,
+    // forzamos una estrategia persistente salvo que el usuario la permita explícitamente.
+    if ((raw === 'noauth' && !ALLOW_NOAUTH) || raw === 'auto' || raw === '') {
+        if (MONGODB_URI && mongoose && MongoStore) {
+            return 'remoteauth';
+        }
+
+        return 'localauth';
+    }
+
+    return raw;
+}
+
+const AUTH_STRATEGY = resolveAuthStrategy();
 const parsedRemoteBackupSyncMs = Number(process.env.REMOTE_BACKUP_SYNC_INTERVAL_MS);
 const REMOTE_BACKUP_SYNC_INTERVAL_MS = Math.max(
     60 * 1000,
@@ -109,7 +128,9 @@ console.log('ENV DEBUG -> MONGODB_URI set:', Boolean(MONGODB_URI));
 console.log('ENV DEBUG -> MONGODB_URI value (first 30 chars):', MONGODB_URI ? MONGODB_URI.substring(0, 30) + '...' : 'NOT SET');
 console.log('ENV DEBUG -> MONGODB_DB:', MONGODB_DB);
 console.log('ENV DEBUG -> SESSION_CLIENT_ID:', SESSION_CLIENT_ID);
-console.log('ENV DEBUG -> AUTH_STRATEGY:', AUTH_STRATEGY);
+console.log('ENV DEBUG -> AUTH_STRATEGY_RAW:', AUTH_STRATEGY_RAW);
+console.log('ENV DEBUG -> ALLOW_NOAUTH:', ALLOW_NOAUTH);
+console.log('ENV DEBUG -> AUTH_STRATEGY_EFFECTIVE:', AUTH_STRATEGY);
 
 const STATE_SAVE_DEBOUNCE_MS = 1000;
 const TRACKED_GROUP_IDS = Object.values(GROUP_IDS);
@@ -194,13 +215,19 @@ function createClient() {
     let authStrategy = null;
     let authLabel = 'none';
 
-    if (AUTH_STRATEGY === 'remoteauth' && mongoStore) {
-        authStrategy = new RemoteAuth({
-            clientId: SESSION_CLIENT_ID,
-            store: mongoStore,
-            backupSyncIntervalMs: REMOTE_BACKUP_SYNC_INTERVAL_MS
-        });
-        authLabel = 'RemoteAuth';
+    if (AUTH_STRATEGY === 'remoteauth') {
+        if (mongoStore) {
+            authStrategy = new RemoteAuth({
+                clientId: SESSION_CLIENT_ID,
+                store: mongoStore,
+                backupSyncIntervalMs: REMOTE_BACKUP_SYNC_INTERVAL_MS
+            });
+            authLabel = 'RemoteAuth';
+        } else {
+            console.warn('SESSION WARN -> RemoteAuth solicitado pero mongoStore no está listo. Usando LocalAuth como fallback.');
+            authStrategy = new LocalAuth({ clientId: SESSION_CLIENT_ID });
+            authLabel = 'LocalAuth(fallback)';
+        }
     } else if (AUTH_STRATEGY === 'localauth') {
         authStrategy = new LocalAuth({ clientId: SESSION_CLIENT_ID });
         authLabel = 'LocalAuth';
@@ -208,9 +235,10 @@ function createClient() {
         authStrategy = NoAuth ? new NoAuth() : null;
         authLabel = NoAuth ? 'NoAuth' : 'NoAuth(unavailable)';
     } else {
-        // fallback seguro
-        authStrategy = NoAuth ? new NoAuth() : new LocalAuth({ clientId: SESSION_CLIENT_ID });
-        authLabel = NoAuth ? 'NoAuth(fallback)' : 'LocalAuth(fallback)';
+        // fallback seguro (persistente)
+        console.warn(`SESSION WARN -> AUTH_STRATEGY desconocida="${AUTH_STRATEGY}". Usando LocalAuth como fallback.`);
+        authStrategy = new LocalAuth({ clientId: SESSION_CLIENT_ID });
+        authLabel = 'LocalAuth(fallback)';
     }
 
     console.log('SESSION DEBUG -> Using auth strategy:', authLabel);
