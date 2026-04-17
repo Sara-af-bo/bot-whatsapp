@@ -193,7 +193,7 @@ const REMOTE_AUTH_PATH = process.env.REMOTE_AUTH_PATH
         : path.join(process.cwd(), '.wwebjs_auth'));
 const parsedInitialRemoteSaveDelayMs = Number(process.env.REMOTE_INITIAL_SAVE_DELAY_MS);
 const REMOTE_INITIAL_SAVE_DELAY_MS = Math.max(
-    5000,
+    3000,
     Number.isFinite(parsedInitialRemoteSaveDelayMs) ? parsedInitialRemoteSaveDelayMs : 15000
 );
 const parsedRemoteBackupSyncMs = Number(process.env.REMOTE_BACKUP_SYNC_INTERVAL_MS);
@@ -210,9 +210,9 @@ class RemoteAuthFastSave extends RemoteAuth {
             // pierdes la sesión y vuelve a pedir QR. Guardamos antes (best-effort) y reintentamos.
             const delays = [
                 REMOTE_INITIAL_SAVE_DELAY_MS,
+                3000,
                 5000,
-                10000,
-                20000
+                8000
             ];
 
             for (const delayMs of delays) {
