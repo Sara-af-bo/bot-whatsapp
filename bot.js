@@ -403,7 +403,6 @@ function createClient() {
         // 0 = ilimitado. Evita desconexiones por "Max qrcode retries reached" mientras escaneas.
         qrMaxRetries: 0,
         puppeteer: {
-            executablePath: DEFAULT_CHROME_PATH || undefined,
             headless: true,
             protocolTimeout: 240000,
             ignoreHTTPSErrors: true,
