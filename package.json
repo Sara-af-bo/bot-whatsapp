@@ -2,8 +2,10 @@
   "name": "bot",
   "version": "1.0.0",
   "main": "bot.js",
+  "type": "commonjs",
   "scripts": {
-    "start": "node bot.js"
+    "start": "node bot.js",
+    "postinstall": "npx puppeteer browsers install chrome"
   },
   "dependencies": {
     "dotenv": "^17.4.2",
@@ -24,7 +26,6 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
   "bugs": {
     "url": "https://github.com/Sara-af-bo/bot-whatsapp/issues"
   },
